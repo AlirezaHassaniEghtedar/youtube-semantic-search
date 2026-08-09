@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Semantic Search</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="header__brand">
+        <svg class="header__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-7-5 7-5v10z"/>
+        </svg>
+        <h1>YouTube Semantic Search</h1>
+      </div>
+      <button type="button" id="theme-toggle" class="btn btn--ghost" aria-label="Toggle theme">
+        <span class="theme-icon theme-icon--light">☀</span>
+        <span class="theme-icon theme-icon--dark">☾</span>
+      </button>
+    </header>
+
+    <main class="main">
+      <!-- Section 1: Add Channel -->
+      <section class="card" id="add-channel-section">
+        <h2 class="card__title">Add Channel</h2>
+        <form id="add-channel-form" class="form">
+          <div class="form__row">
+            <label for="channel-url" class="form__label">Channel URL</label>
+            <input
+              type="url"
+              id="channel-url"
+              class="form__input"
+              placeholder="https://www.youtube.com/@channelname"
+              required
+            >
+          </div>
+          <div class="form__row form__row--inline">
+            <div class="form__field">
+              <label for="time-window" class="form__label">Time Window</label>
+              <select id="time-window" class="form__select">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d" selected>Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="custom">Custom range</option>
+                <option value="all">All videos</option>
+              </select>
+            </div>
+            <div id="custom-dates" class="form__field custom-dates hidden">
+              <label for="start-date" class="form__label">Start Date</label>
+              <input type="date" id="start-date" class="form__input">
+              <label for="end-date" class="form__label">End Date</label>
+              <input type="date" id="end-date" class="form__input">
+            </div>
+          </div>
+          <button type="submit" class="btn btn--primary" id="add-channel-btn">
+            <span class="btn__text">Add Channel</span>
+            <span class="btn__spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+
+      <!-- Section 2: Channels List -->
+      <section class="card" id="channels-section">
+        <div class="card__header">
+          <h2 class="card__title">Channels</h2>
+          <span id="polling-indicator" class="polling-indicator hidden" aria-live="polite">
+            <span class="polling-dot"></span> Syncing…
+          </span>
+        </div>
+        <div id="channels-list" class="channels-list">
+          <p class="empty-state">No channels added yet. Add a YouTube channel above to get started.</p>
+        </div>
+      </section>
+
+      <!-- Section 3: Videos List -->
+      <section class="card hidden" id="videos-section">
+        <div class="card__header">
+          <h2 class="card__title">Videos — <span id="selected-channel-name"></span></h2>
+          <button type="button" id="close-videos-btn" class="btn btn--ghost btn--sm">Close</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="videos-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Published</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="videos-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Section 5: Search -->
+      <section class="card" id="search-section">
+        <h2 class="card__title">Semantic Search</h2>
+        <form id="search-form" class="form">
+          <div class="form__row">
+            <label for="search-query" class="form__label">Search Query</label>
+            <input
+              type="text"
+              id="search-query"
+              class="form__input"
+              placeholder="Search in Persian or English…"
+              dir="auto"
+            >
+          </div>
+          <div class="form__row form__row--inline">
+            <div class="form__field">
+              <label for="search-channel" class="form__label">Channel (optional)</label>
+              <select id="search-channel" class="form__select">
+                <option value="">All channels</option>
+              </select>
+            </div>
+            <div class="form__field">
+              <label for="search-date-from" class="form__label">From (optional)</label>
+              <input type="date" id="search-date-from" class="form__input">
+            </div>
+            <div class="form__field">
+              <label for="search-date-to" class="form__label">To (optional)</label>
+              <input type="date" id="search-date-to" class="form__input">
+            </div>
+          </div>
+          <button type="submit" class="btn btn--primary" id="search-btn">
+            <span class="btn__text">Search</span>
+            <span class="btn__spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+        <div id="search-results" class="search-results"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Section 4: Transcript Modal -->
+  <div id="transcript-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="transcript-title">
+    <div class="modal__backdrop" id="modal-backdrop"></div>
+    <div class="modal__content">
+      <div class="modal__header">
+        <h3 id="transcript-title" class="modal__title">Transcript</h3>
+        <button type="button" id="close-modal-btn" class="btn btn--ghost btn--sm" aria-label="Close">✕</button>
+      </div>
+      <div class="modal__toolbar">
+        <div class="toggle-group" role="group" aria-label="Timestamp mode">
+          <button type="button" id="toggle-with-ts" class="toggle-btn toggle-btn--active">With timestamps</button>
+          <button type="button" id="toggle-without-ts" class="toggle-btn">Without timestamps</button>
+        </div>
+        <button type="button" id="copy-transcript-btn" class="btn btn--ghost btn--sm hidden">Copy text</button>
+      </div>
+      <div id="transcript-body" class="modal__body"></div>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

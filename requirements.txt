@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+aiosqlite
+numpy
+yt-dlp
+faster-whisper
+sentence-transformers
+pydantic-settings
+python-dotenv
+pywebview
+httpx
+python-dateutil

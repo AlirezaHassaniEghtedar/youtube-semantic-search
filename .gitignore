@@ -1,0 +1,134 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, coverage and tooling
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+.env/
+.conda/
+
+# =========================
+# Environment and secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Databases and local data
+# =========================
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-*
+*.sqlite
+*.sqlite3
+
+# Keep directory placeholders
+!data/.gitkeep
+
+# =========================
+# Downloads and generated media
+# =========================
+downloads/*
+!downloads/.gitkeep
+
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+
+# Subtitles and transcription output
+*.srt
+*.vtt
+*.ass
+
+# =========================
+# ML / embedding / cache files
+# =========================
+.cache/
+huggingface/
+.huggingface/
+transformers_cache/
+sentence_transformers/
+models/
+checkpoints/
+
+# Common model files
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# =========================
+# Logs and runtime files
+# =========================
+*.log
+logs/
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# IDE/editor files
+# =========================
+.vscode/
+.idea/
+*.code-workspace
+
+# Vim / VS Code swap files
+*.swn
+*.swo
+*.swp
+
+# =========================
+# Windows generated files
+# =========================
+*.lnk
+*.stackdump
