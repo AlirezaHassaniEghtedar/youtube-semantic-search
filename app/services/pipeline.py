@@ -10,19 +10,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import async_session_factory
 from app.models import Channel, ChannelStatus, Segment, Video, VideoStatus, utcnow
+from app.services.captions import fetch_captions
 from app.services.downloader import cleanup_audio_file, download_audio, list_channel_videos
 from app.services.embedder import EmbedderService, serialize_embedding
 from app.services.transcriber import transcribe
 
 logger = logging.getLogger(__name__)
 
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(
+    max_workers=settings.MAX_CONCURRENT_DOWNLOADS + settings.MAX_CONCURRENT_TRANSCRIBE
+)
 
 WINDOW_MAX_ITEMS: dict[str, int | None] = {
     "24h": 50,
     "7d": 150,
     "30d": 400,
     "custom": 1000,
+    "custom_hours": 300,
     "all": None,
 }
 
@@ -31,6 +35,7 @@ def compute_time_window(
     time_window: str,
     start_date: datetime | None = None,
     end_date: datetime | None = None,
+    custom_hours: int | None = None,
 ) -> tuple[datetime | None, datetime | None]:
     now = utcnow()
     if time_window == "all":
@@ -41,6 +46,8 @@ def compute_time_window(
         return now - timedelta(days=7), now
     if time_window == "30d":
         return now - timedelta(days=30), now
+    if time_window == "custom_hours":
+        return now - timedelta(hours=custom_hours or 24), now
     if time_window == "custom":
         start = start_date
         end = end_date or now
@@ -83,6 +90,7 @@ async def run_channel_pipeline(
     end_date: datetime | None,
     whisper_model,
     embedder: EmbedderService,
+    custom_hours: int | None = None,
 ) -> None:
     loop = asyncio.get_event_loop()
 
@@ -109,7 +117,7 @@ async def run_channel_pipeline(
             channel.name = videos_data[0].get("channel_name") or channel.name
 
         window_start, window_end = compute_time_window(
-            time_window, start_date, end_date
+            time_window, start_date, end_date, custom_hours
         )
 
         if time_window != "all" and any(
@@ -201,10 +209,18 @@ async def _process_pending_videos(
         )
         videos = list(result.scalars().all())
 
-    for video in videos:
-        await _process_single_video(
-            video.id, whisper_model, embedder, loop
+    if not videos:
+        return
+
+    download_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
+    transcribe_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_TRANSCRIBE)
+    tasks = [
+        _process_single_video(
+            video.id, whisper_model, embedder, loop, download_sem, transcribe_sem
         )
+        for video in videos
+    ]
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _process_single_video(
@@ -212,6 +228,8 @@ async def _process_single_video(
     whisper_model,
     embedder: EmbedderService,
     loop: asyncio.AbstractEventLoop,
+    download_sem: asyncio.Semaphore,
+    transcribe_sem: asyncio.Semaphore,
 ) -> None:
     youtube_video_id: str | None = None
 
@@ -221,24 +239,48 @@ async def _process_single_video(
             if video is None or video.status != VideoStatus.PENDING:
                 return
             youtube_video_id = video.youtube_video_id
-            video.status = VideoStatus.DOWNLOADING
             video.error_message = None
             await session.commit()
 
-        audio_path = await loop.run_in_executor(
-            _executor, download_audio, youtube_video_id
-        )
+        segments_data = None
+        if settings.PREFER_CAPTIONS:
+            async with async_session_factory() as session:
+                video = await session.get(Video, video_id)
+                if video is None:
+                    return
+                video.status = VideoStatus.TRANSCRIBING
+                logger.info("Video %s status: transcribing (captions)", youtube_video_id)
+                await session.commit()
+            segments_data = await loop.run_in_executor(
+                _executor, fetch_captions, youtube_video_id
+            )
 
-        async with async_session_factory() as session:
-            video = await session.get(Video, video_id)
-            if video is None:
-                return
-            video.status = VideoStatus.TRANSCRIBING
-            await session.commit()
+        if segments_data is None:
+            async with async_session_factory() as session:
+                video = await session.get(Video, video_id)
+                if video is None:
+                    return
+                video.status = VideoStatus.DOWNLOADING
+                logger.info("Video %s status: downloading", youtube_video_id)
+                await session.commit()
 
-        segments_data = await loop.run_in_executor(
-            _executor, transcribe, whisper_model, audio_path
-        )
+            async with download_sem:
+                audio_path = await loop.run_in_executor(
+                    _executor, download_audio, youtube_video_id
+                )
+
+            async with async_session_factory() as session:
+                video = await session.get(Video, video_id)
+                if video is None:
+                    return
+                video.status = VideoStatus.TRANSCRIBING
+                logger.info("Video %s status: transcribing (Whisper)", youtube_video_id)
+                await session.commit()
+
+            async with transcribe_sem:
+                segments_data = await loop.run_in_executor(
+                    _executor, transcribe, whisper_model, audio_path
+                )
 
         if not segments_data:
             async with async_session_factory() as session:
@@ -253,6 +295,7 @@ async def _process_single_video(
             if video is None:
                 return
             video.status = VideoStatus.EMBEDDING
+            logger.info("Video %s status: embedding", youtube_video_id)
             await session.commit()
 
         texts = [s["text"] for s in segments_data]
@@ -282,6 +325,7 @@ async def _process_single_video(
                 session.add(segment)
 
             video.status = VideoStatus.DONE
+            logger.info("Video %s status: done", youtube_video_id)
             video.error_message = None
             await session.commit()
 
@@ -294,5 +338,6 @@ async def _process_single_video(
             video = await session.get(Video, video_id)
             if video:
                 video.status = VideoStatus.ERROR
+                logger.info("Video %s status: error", youtube_video_id)
                 video.error_message = str(exc)
                 await session.commit()

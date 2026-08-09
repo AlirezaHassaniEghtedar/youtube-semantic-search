@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +12,37 @@ logger = logging.getLogger(__name__)
 
 
 def load_whisper_model() -> WhisperModel:
-    return WhisperModel(
+    if settings.WHISPER_DEVICE.lower() == "cuda":
+        try:
+            model = WhisperModel(
+                settings.WHISPER_MODEL_SIZE,
+                device="cuda",
+                compute_type=settings.WHISPER_COMPUTE_TYPE,
+                num_workers=settings.WHISPER_NUM_WORKERS,
+            )
+            logger.info(
+                "Loaded Whisper model '%s' on CUDA (compute_type=%s, num_workers=%d)",
+                settings.WHISPER_MODEL_SIZE,
+                settings.WHISPER_COMPUTE_TYPE,
+                settings.WHISPER_NUM_WORKERS,
+            )
+            return model
+        except Exception:
+            logger.exception(
+                "Failed to load Whisper model on CUDA, falling back to CPU. "
+                "Check that your NVIDIA driver and the CUDA/cuDNN libraries "
+                "(installed via requirements.txt) are present."
+            )
+
+    model = WhisperModel(
         settings.WHISPER_MODEL_SIZE,
         device="cpu",
         compute_type="int8",
+        cpu_threads=os.cpu_count() or 4,
+        num_workers=settings.WHISPER_NUM_WORKERS,
     )
+    logger.info("Loaded Whisper model '%s' on CPU (int8)", settings.WHISPER_MODEL_SIZE)
+    return model
 
 
 def transcribe(model: WhisperModel, audio_path: Path) -> list[dict[str, Any]]:

@@ -75,6 +75,11 @@ async def create_or_update_channel(
             status_code=400,
             detail="start_date is required for custom time window",
         )
+    if payload.time_window == "custom_hours" and not payload.custom_hours:
+        raise HTTPException(
+            status_code=400,
+            detail="custom_hours is required for custom_hours time window",
+        )
 
     result = await db.execute(
         select(Channel).where(Channel.url == payload.url)
@@ -102,6 +107,7 @@ async def create_or_update_channel(
         payload.end_date,
         whisper_model,
         embedder,
+        payload.custom_hours,
     )
 
     counts = await _channel_counts(db, channel.id)

@@ -7,10 +7,11 @@ from pydantic import BaseModel, Field
 class ChannelCreate(BaseModel):
     url: str
     time_window: str = Field(
-        default="7d", pattern=r"^(24h|7d|30d|custom|all)$"
+        default="7d", pattern=r"^(24h|7d|30d|custom|custom_hours|all)$"
     )
     start_date: datetime | None = None
     end_date: datetime | None = None
+    custom_hours: int | None = Field(default=None, ge=1, le=8760)
 
 
 class ChannelSummary(BaseModel):

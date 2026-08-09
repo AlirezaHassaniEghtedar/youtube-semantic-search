@@ -410,9 +410,13 @@ async function performSearch(e) {
 function initAddChannelForm() {
   const timeWindow = document.getElementById("time-window");
   const customDates = document.getElementById("custom-dates");
+  const customHoursField = document.getElementById("custom-hours-field");
 
   timeWindow.addEventListener("change", () => {
     customDates.classList.toggle("hidden", timeWindow.value !== "custom");
+    customHoursField.classList.toggle(
+      "hidden", timeWindow.value !== "custom_hours"
+    );
   });
 
   document.getElementById("add-channel-form").addEventListener("submit", async (e) => {
@@ -435,6 +439,15 @@ function initAddChannelForm() {
       }
       payload.start_date = new Date(start).toISOString();
       if (end) payload.end_date = new Date(end + "T23:59:59").toISOString();
+    }
+    if (timeWindow.value === "custom_hours") {
+      const hours = parseInt(document.getElementById("custom-hours-input").value, 10);
+      if (!hours || hours < 1) {
+        showToast("Please enter a valid number of hours", "error");
+        setButtonLoading(btn, false);
+        return;
+      }
+      payload.custom_hours = hours;
     }
 
     try {
@@ -470,6 +483,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   initModal();
 
   document.getElementById("search-form").addEventListener("submit", performSearch);
+  document.getElementById("clear-search-btn").addEventListener("click", () => {
+    document.getElementById("search-results").innerHTML = "";
+    document.getElementById("search-query").value = "";
+    document.getElementById("search-channel").value = "";
+    document.getElementById("search-date-from").value = "";
+    document.getElementById("search-date-to").value = "";
+  });
 
   document.getElementById("close-videos-btn").addEventListener("click", () => {
     selectedChannelId = null;

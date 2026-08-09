@@ -32,8 +32,8 @@ def list_channel_videos(url: str, max_items: int | None = None) -> list[dict[str
     url = _normalize_channel_url(url)
 
     ydl_opts: dict[str, Any] = {
-        "quiet": False,
-        "no_warnings": False,
+        "quiet": True,
+        "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
         "ignoreerrors": True,

@@ -12,6 +12,12 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/app.db"
     WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_DEVICE: str = "cuda"
+    WHISPER_COMPUTE_TYPE: str = "float16"
+    WHISPER_NUM_WORKERS: int = 2
+    MAX_CONCURRENT_DOWNLOADS: int = 4
+    MAX_CONCURRENT_TRANSCRIBE: int = 2
+    PREFER_CAPTIONS: bool = True
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )

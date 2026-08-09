@@ -14,6 +14,7 @@ Everything runs offline after the initial model download. Vector search uses pur
 | **OS** | Windows 10 / 11 |
 | **FFmpeg** | Required by yt-dlp for audio extraction — must be in your system PATH |
 | **Internet** | Needed once to download Whisper + embedding models and YouTube content |
+| **NVIDIA GPU (optional)** | GPU acceleration needs a reasonably recent CUDA 12-compatible NVIDIA driver. The pip dependencies provide the runtime; no separate CUDA Toolkit is required. |
 
 ### Install FFmpeg
 
@@ -60,6 +61,8 @@ ffmpeg -version
    pip install -r requirements.txt
    ```
 
+   If logs show Whisper falling back to CPU after installation, update your NVIDIA driver from the NVIDIA website.
+
 5. **Configure environment:**
 
    ```powershell
@@ -94,6 +97,7 @@ On first launch, Whisper and sentence-transformers models are downloaded automat
 2. Choose a **time window**:
    - **Last 24 hours** / **7 days** / **30 days**
    - **Custom range** — pick start and end dates
+   - **Custom hours** — process videos from the last number of hours you enter
    - **All videos** — process the entire channel catalog
 3. Click **Add Channel**.
 
@@ -147,6 +151,12 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 |---|---|---|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/app.db` | SQLite database path |
 | `WHISPER_MODEL_SIZE` | `base` | faster-whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) |
+| `WHISPER_DEVICE` | `cuda` | Whisper device (`cuda` or `cpu`); CUDA falls back to CPU if unavailable |
+| `WHISPER_COMPUTE_TYPE` | `float16` | CUDA Whisper compute type |
+| `WHISPER_NUM_WORKERS` | `2` | Concurrent Whisper model workers |
+| `MAX_CONCURRENT_DOWNLOADS` | `4` | Maximum simultaneous audio downloads |
+| `MAX_CONCURRENT_TRANSCRIBE` | `2` | Maximum simultaneous Whisper transcriptions |
+| `PREFER_CAPTIONS` | `true` | Use existing YouTube captions before downloading audio and transcribing |
 | `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | sentence-transformers model |
 | `DOWNLOAD_DIR` | `./downloads` | Temporary audio storage (deleted after transcription) |
 | `MAX_SEARCH_RESULTS` | `20` | Default search result limit |
