@@ -21,11 +21,17 @@ def _parse_upload_date(raw: str | None) -> datetime | None:
 
 
 def list_channel_videos(url: str) -> list[dict[str, Any]]:
-    """List all videos on a channel via yt-dlp flat-playlist extraction."""
+    """List all videos on a channel via yt-dlp flat-playlist extraction.
+
+    Make extraction more robust across different YouTube URL formats and
+    yt-dlp entry shapes. Log counts for easier debugging when listings come
+    back empty.
+    """
     ydl_opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
-        "extract_flat": "in_playlist",
+        # Use a boolean flat extraction which works for channels and playlists
+        "extract_flat": True,
         "skip_download": True,
         "ignoreerrors": True,
     }
@@ -35,23 +41,55 @@ def list_channel_videos(url: str) -> list[dict[str, Any]]:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        if info is None:
+        if not info:
+            logger.debug("yt-dlp returned no info for URL: %s", url)
             return results
 
-        channel_name = info.get("channel") or info.get("uploader") or ""
+        channel_name = (
+            info.get("channel")
+            or info.get("uploader")
+            or info.get("uploader_id")
+            or ""
+        )
         entries = info.get("entries") or []
 
+        logger.debug("list_channel_videos: found %d entries for %s", len(entries), url)
+
         for entry in entries:
-            if entry is None:
+            if not entry:
                 continue
 
-            video_id = entry.get("id") or entry.get("url", "").split("=")[-1]
+            # Try multiple fields that may contain the video id or url
+            vid_field = entry.get("id") or entry.get("url") or entry.get("webpage_url") or ""
+
+            video_id = ""
+            if isinstance(vid_field, str):
+                video_id = vid_field
+                # If it's a full URL, try to extract the video id
+                if video_id.startswith("http"):
+                    if "v=" in video_id:
+                        video_id = video_id.split("v=")[-1].split("&")[0]
+                    else:
+                        video_id = video_id.rstrip("/").split("/")[-1]
+                # Some extractors return a namespaced id like 'youtube:VIDEOID'
+                if ":" in video_id and len(video_id) > 11:
+                    video_id = video_id.split(":")[-1]
+
             if not video_id or len(video_id) != 11:
+                # Skip entries that don't look like a YouTube id
                 continue
 
             title = entry.get("title") or "Untitled"
-            upload_date = entry.get("upload_date") or entry.get("release_date")
-            published_at = _parse_upload_date(upload_date)
+
+            upload_date = entry.get("upload_date") or entry.get("release_date") or entry.get("timestamp")
+            published_at = None
+            if isinstance(upload_date, str):
+                published_at = _parse_upload_date(upload_date)
+            elif isinstance(upload_date, (int, float)):
+                try:
+                    published_at = datetime.fromtimestamp(int(upload_date), tz=timezone.utc)
+                except Exception:
+                    published_at = None
 
             duration = entry.get("duration")
             if duration is None:
