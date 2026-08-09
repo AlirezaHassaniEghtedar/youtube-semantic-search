@@ -6,8 +6,39 @@ from typing import Any
 import yt_dlp
 
 from app.config import settings
+from app.services.retry import RateLimitError, looks_like_rate_limit, with_backoff
 
 logger = logging.getLogger(__name__)
+
+
+class BotCheckError(RateLimitError):
+    """A YouTube sign-in / bot-check response from yt-dlp."""
+
+
+_BOT_CHECK_MARKERS = ("sign in to confirm", "not a bot")
+
+
+def _base_ydl_opts() -> dict[str, Any]:
+    """Shared pacing and optional authentication for yt-dlp requests."""
+    browser = (
+        settings.YT_COOKIES_FROM_BROWSER
+        or settings.YT_DLP_COOKIES_FROM_BROWSER
+    )
+    opts: dict[str, Any] = {
+        "sleep_interval_requests": 1,
+        "sleep_interval": 2,
+        "max_sleep_interval": 5,
+    }
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
+    elif settings.YT_COOKIES_FILE:
+        opts["cookiefile"] = settings.YT_COOKIES_FILE
+    return opts
+
+
+def _raise_if_bot_check(exc: Exception) -> None:
+    if any(marker in str(exc).lower() for marker in _BOT_CHECK_MARKERS):
+        raise BotCheckError(str(exc)) from exc
 
 
 def _parse_upload_date(raw: str | None) -> datetime | None:
@@ -27,11 +58,16 @@ def _normalize_channel_url(url: str) -> str:
     return f"{url}/videos"
 
 
-def list_channel_videos(url: str, max_items: int | None = None) -> list[dict[str, Any]]:
+def list_channel_videos(
+    url: str,
+    max_items: int | None = None,
+    start_item: int | None = None,
+) -> list[dict[str, Any]]:
     """List videos on a channel via yt-dlp flat-playlist extraction."""
     url = _normalize_channel_url(url)
 
     ydl_opts: dict[str, Any] = {
+        **_base_ydl_opts(),
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
@@ -40,15 +76,22 @@ def list_channel_videos(url: str, max_items: int | None = None) -> list[dict[str
     }
     if max_items is not None:
         ydl_opts["playlistend"] = max_items
+    if start_item and start_item > 1:
+        ydl_opts["playliststart"] = start_item
 
     results: list[dict[str, Any]] = []
     channel_name = ""
 
-    logger.info("Fetching video list for channel: %s (max_items=%s)", url, max_items)
+    logger.info(
+        "Fetching video list for channel: %s (start_item=%s, max_items=%s)",
+        url,
+        start_item,
+        max_items,
+    )
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = with_backoff(lambda: ydl.extract_info(url, download=False))
             if info is None:
                 logger.error("yt-dlp returned no info for channel URL: %s", url)
                 return results
@@ -91,7 +134,10 @@ def list_channel_videos(url: str, max_items: int | None = None) -> list[dict[str
                         "channel_name": channel_name,
                     }
                 )
-    except Exception:
+    except Exception as exc:
+        _raise_if_bot_check(exc)
+        if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
+            raise RateLimitError(str(exc)) from exc
         logger.exception("Failed to fetch video list for channel URL: %s", url)
         raise
 
@@ -105,6 +151,7 @@ def download_audio(youtube_video_id: str) -> Path:
     output_template = str(output_dir / f"{youtube_video_id}.%(ext)s")
 
     ydl_opts: dict[str, Any] = {
+        **_base_ydl_opts(),
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio/best",
@@ -121,8 +168,14 @@ def download_audio(youtube_video_id: str) -> Path:
 
     url = f"https://www.youtube.com/watch?v={youtube_video_id}"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with_backoff(lambda: ydl.download([url]))
+    except Exception as exc:
+        _raise_if_bot_check(exc)
+        if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
+            raise RateLimitError(str(exc)) from exc
+        raise
 
     expected = output_dir / f"{youtube_video_id}.m4a"
     if expected.exists():

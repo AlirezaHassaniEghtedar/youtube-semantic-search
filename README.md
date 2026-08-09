@@ -154,9 +154,13 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `WHISPER_DEVICE` | `cuda` | Whisper device (`cuda` or `cpu`); CUDA falls back to CPU if unavailable |
 | `WHISPER_COMPUTE_TYPE` | `float16` | CUDA Whisper compute type |
 | `WHISPER_NUM_WORKERS` | `2` | Concurrent Whisper model workers |
-| `MAX_CONCURRENT_DOWNLOADS` | `4` | Maximum simultaneous audio downloads |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | Maximum simultaneous audio downloads; raising it increases YouTube rate-limit risk |
 | `MAX_CONCURRENT_TRANSCRIBE` | `2` | Maximum simultaneous Whisper transcriptions |
 | `PREFER_CAPTIONS` | `true` | Use existing YouTube captions before downloading audio and transcribing |
+| `YT_COOKIES_FROM_BROWSER` | empty | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
+| `YT_COOKIES_FILE` | empty | Optional Netscape-format cookies.txt file, used instead of browser cookies |
+| `DOWNLOAD_JITTER_MIN_SECONDS` / `DOWNLOAD_JITTER_MAX_SECONDS` | `1.0` / `4.0` | Random delay before downloads to avoid request bursts |
+| `BOT_CHECK_COOLDOWN_MINUTES` | `15` | How long a batch backs off after a bot-check response |
 | `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | sentence-transformers model |
 | `DOWNLOAD_DIR` | `./downloads` | Temporary audio storage (deleted after transcription) |
 | `MAX_SEARCH_RESULTS` | `20` | Default search result limit |
@@ -218,6 +222,7 @@ You can bundle the app with PyInstaller for distribution without requiring Pytho
 | **Model download fails** | Check internet connection. Retry after connectivity is restored. |
 | **Video shows Error status** | Video may be private, deleted, or age-restricted. Other videos continue processing. |
 | **Slow transcription** | Use a smaller Whisper model (`tiny` or `base`) in `.env`. CPU transcription is inherently slow. |
+| **"Sign in to confirm you're not a bot" or many videos fail together** | YouTube has rate-limited the IP. Wait before retrying, keep `MAX_CONCURRENT_DOWNLOADS` low, and optionally set `YT_COOKIES_FROM_BROWSER=chrome` (or another browser where you are logged in). Cookie-based automated access is your responsibility and may carry account/Terms-of-Service risk. |
 | **App window blank on launch** | Wait up to 15 seconds for models to load. Check logs in the terminal if running manually. |
 
 ---

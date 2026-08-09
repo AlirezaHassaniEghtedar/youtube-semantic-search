@@ -267,6 +267,16 @@ body {
   background: var(--color-error-bg);
 }
 
+.btn--warning {
+  background: transparent;
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.btn--warning:hover:not(:disabled) {
+  background: var(--color-warning-bg);
+}
+
 .btn--sm {
   padding: var(--space-1) var(--space-3);
   font-size: 0.82rem;
@@ -323,6 +333,12 @@ body {
 .badge--error {
   background: var(--color-error-bg);
   color: var(--color-error);
+}
+
+.badge--stopped,
+.badge--skipped_already_covered {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 /* Channels list */
@@ -441,6 +457,30 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sync-history {
+  margin-top: var(--space-5);
+}
+
+.sync-history__title {
+  font-size: 0.9rem;
+  margin-bottom: var(--space-2);
+}
+
+.sync-history__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sync-history__item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
 }
 
 /* Search results */

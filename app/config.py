@@ -15,9 +15,18 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = "cuda"
     WHISPER_COMPUTE_TYPE: str = "float16"
     WHISPER_NUM_WORKERS: int = 2
-    MAX_CONCURRENT_DOWNLOADS: int = 4
+    # Keep download parallelism conservative: it is the main contributor to
+    # YouTube rate limits. Whisper work is local and can still use the GPU.
+    MAX_CONCURRENT_DOWNLOADS: int = 2
     MAX_CONCURRENT_TRANSCRIBE: int = 2
     PREFER_CAPTIONS: bool = True
+    YT_COOKIES_FROM_BROWSER: str | None = None
+    YT_COOKIES_FILE: str | None = None
+    # Backwards-compatible alias for the earlier documented setting name.
+    YT_DLP_COOKIES_FROM_BROWSER: str | None = None
+    DOWNLOAD_JITTER_MIN_SECONDS: float = 1.0
+    DOWNLOAD_JITTER_MAX_SECONDS: float = 4.0
+    BOT_CHECK_COOLDOWN_MINUTES: int = 15
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )

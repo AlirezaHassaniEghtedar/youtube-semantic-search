@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     DateTime,
+    Boolean,
     Enum,
     Float,
     ForeignKey,
@@ -30,6 +31,16 @@ class ChannelStatus(str, enum.Enum):
     PROCESSING = "processing"
     DONE = "done"
     ERROR = "error"
+    STOPPED = "stopped"
+
+
+class SyncJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+    STOPPED = "stopped"
+    SKIPPED_ALREADY_COVERED = "skipped_already_covered"
 
 
 class VideoStatus(str, enum.Enum):
@@ -55,6 +66,8 @@ class Channel(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_synced_item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -62,6 +75,35 @@ class Channel(Base):
     videos: Mapped[list["Video"]] = relationship(
         "Video", back_populates="channel", cascade="all, delete-orphan"
     )
+    sync_jobs: Mapped[list["SyncJob"]] = relationship(
+        "SyncJob", back_populates="channel", cascade="all, delete-orphan"
+    )
+
+
+class SyncJob(Base):
+    __tablename__ = "sync_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("channels.id", ondelete="CASCADE"), nullable=False
+    )
+    time_window: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_max_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[SyncJobStatus] = mapped_column(
+        Enum(SyncJobStatus, native_enum=False),
+        default=SyncJobStatus.PENDING,
+        nullable=False,
+    )
+    new_videos_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    channel: Mapped["Channel"] = relationship("Channel", back_populates="sync_jobs")
 
 
 class Video(Base):

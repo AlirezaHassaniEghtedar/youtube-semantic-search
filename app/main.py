@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.database import engine
+from app.database import engine, ensure_columns
 from app.models import Base
 from app.routers import channels, search, videos
 from app.schemas import HealthResponse
@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_columns()
 
     logger.info("Loading Whisper model (%s)...", settings.WHISPER_MODEL_SIZE)
     whisper_model = load_whisper_model()

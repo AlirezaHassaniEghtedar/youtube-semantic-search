@@ -6,17 +6,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Channel, ChannelStatus, Video, VideoStatus
-from app.schemas import ChannelCreate, ChannelDetail, ChannelSummary
+from app.models import Channel, ChannelStatus, SyncJob, Video, VideoStatus
+from app.schemas import ChannelCreate, ChannelDetail, ChannelSummary, SyncJobSummary
 from app.config import settings
 from app.services.downloader import cleanup_audio_file
-from app.services.pipeline import run_channel_pipeline
+from app.services.pipeline import clear_stop, request_stop, run_channel_pipeline
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
-TERMINAL_CHANNEL_STATUSES = {ChannelStatus.DONE, ChannelStatus.ERROR}
+TERMINAL_CHANNEL_STATUSES = {
+    ChannelStatus.DONE,
+    ChannelStatus.ERROR,
+    ChannelStatus.STOPPED,
+}
 TERMINAL_VIDEO_STATUSES = {VideoStatus.DONE, VideoStatus.ERROR}
 
 
@@ -91,6 +95,7 @@ async def create_or_update_channel(
         db.add(channel)
         await db.flush()
     else:
+        clear_stop(channel.id)
         channel.status = ChannelStatus.PENDING
 
     await db.commit()
@@ -146,8 +151,32 @@ async def get_channel(channel_id: UUID, db: AsyncSession = Depends(get_db)):
     )
 
 
+@router.get("/{channel_id}/syncs", response_model=list[SyncJobSummary])
+async def list_channel_syncs(channel_id: UUID, db: AsyncSession = Depends(get_db)):
+    channel = await db.get(Channel, channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    result = await db.execute(
+        select(SyncJob)
+        .where(SyncJob.channel_id == channel_id)
+        .order_by(SyncJob.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.post("/{channel_id}/stop", status_code=202)
+async def stop_channel_sync(channel_id: UUID, db: AsyncSession = Depends(get_db)):
+    channel = await db.get(Channel, channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if channel.status in TERMINAL_CHANNEL_STATUSES:
+        raise HTTPException(status_code=400, detail="Channel is not currently syncing")
+    return {"status": "stop_requested", "stopping": request_stop(channel_id)}
+
+
 @router.delete("/{channel_id}", status_code=204)
 async def delete_channel(channel_id: UUID, db: AsyncSession = Depends(get_db)):
+    request_stop(channel_id)
     channel = await db.get(Channel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Channel not found")

@@ -32,6 +32,19 @@ class ChannelDetail(ChannelSummary):
     error_videos: int = 0
 
 
+class SyncJobSummary(BaseModel):
+    id: UUID
+    time_window: str
+    requested_max_items: int | None
+    status: str
+    new_videos_found: int
+    error_message: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class VideoSummary(BaseModel):
     id: UUID
     channel_id: UUID

@@ -1,6 +1,7 @@
 /* YouTube Semantic Search — Frontend Application */
 
-const TERMINAL_CHANNEL_STATUSES = new Set(["done", "error"]);
+const TERMINAL_CHANNEL_STATUSES = new Set(["done", "error", "stopped"]);
+const ACTIVE_CHANNEL_STATUSES = new Set(["pending", "fetching_list", "processing"]);
 const TERMINAL_VIDEO_STATUSES = new Set(["done", "error"]);
 const POLL_INTERVAL_MS = 3000;
 
@@ -100,7 +101,10 @@ function startPolling() {
   document.getElementById("polling-indicator").classList.remove("hidden");
   pollInterval = setInterval(async () => {
     await refreshChannels();
-    if (selectedChannelId) await refreshVideos(selectedChannelId);
+    if (selectedChannelId) {
+      await refreshVideos(selectedChannelId);
+      await refreshSyncHistory(selectedChannelId);
+    }
     checkStopPolling();
   }, POLL_INTERVAL_MS);
 }
@@ -160,6 +164,11 @@ function renderChannels(channels) {
         </div>
       </div>
       <div class="channel-card__actions">
+        ${
+          ACTIVE_CHANNEL_STATUSES.has(ch.status)
+            ? `<button type="button" class="btn btn--warning btn--sm stop-sync-btn" data-id="${ch.id}">Stop Syncing</button>`
+            : ""
+        }
         <button type="button" class="btn btn--ghost btn--sm view-videos-btn" data-id="${ch.id}" data-name="${escapeHtml(ch.name || ch.url)}">
           View Videos
         </button>
@@ -177,6 +186,21 @@ function renderChannels(channels) {
       document.getElementById("selected-channel-name").textContent = btn.dataset.name;
       document.getElementById("videos-section").classList.remove("hidden");
       refreshVideos(selectedChannelId);
+      refreshSyncHistory(selectedChannelId);
+    });
+  });
+
+  container.querySelectorAll(".stop-sync-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await apiFetch(`/api/channels/${btn.dataset.id}/stop`, { method: "POST" });
+        showToast("Stop requested — finishing the current step, then stopping");
+        await refreshChannels();
+      } catch (err) {
+        showToast(err.message, "error");
+        btn.disabled = false;
+      }
     });
   });
 
@@ -219,6 +243,24 @@ async function refreshVideos(channelId) {
     renderVideos(videos);
   } catch (err) {
     console.error("Failed to load videos:", err);
+  }
+}
+
+async function refreshSyncHistory(channelId) {
+  const container = document.getElementById("sync-history-list");
+  try {
+    const jobs = await apiFetch(`/api/channels/${channelId}/syncs`);
+    container.innerHTML = jobs.length
+      ? jobs.map((job) => `
+          <div class="sync-history__item">
+            <span class="badge badge--${job.status}">${job.status.replace(/_/g, " ")}</span>
+            <span>${escapeHtml(job.time_window)}</span>
+            <span>${job.status === "skipped_already_covered" ? "already covered" : `${job.new_videos_found} new videos`}</span>
+            <span>${formatDate(job.created_at)}</span>
+          </div>`).join("")
+      : '<p class="empty-state">No syncs yet.</p>';
+  } catch (err) {
+    console.error("Failed to load sync history:", err);
   }
 }
 
