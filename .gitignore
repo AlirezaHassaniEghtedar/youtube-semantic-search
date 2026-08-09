@@ -132,3 +132,5 @@ Desktop.ini
 # =========================
 *.lnk
 *.stackdump
+
+/cookies.txt
