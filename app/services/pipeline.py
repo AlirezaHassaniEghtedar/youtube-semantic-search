@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
+WINDOW_MAX_ITEMS: dict[str, int | None] = {
+    "24h": 50,
+    "7d": 150,
+    "30d": 400,
+    "custom": 1000,
+    "all": None,
+}
+
 
 def compute_time_window(
     time_window: str,
@@ -44,6 +52,12 @@ def compute_time_window(
     return now - timedelta(days=7), now
 
 
+# NOTE: yt-dlp's extract_flat mode does not return upload_date for most
+# channel entries, so published_at is usually None here. We cannot reliably
+# filter by exact date in that case. Instead, "recency" is approximated by
+# limiting how many entries we fetch via WINDOW_MAX_ITEMS/playlistend in
+# list_channel_videos (entries come back newest-first). If published_at IS
+# available, we still filter against the window as a secondary check.
 def _video_in_window(
     published_at: datetime | None,
     window_start: datetime | None,
@@ -80,9 +94,10 @@ async def run_channel_pipeline(
         channel.status = ChannelStatus.FETCHING_LIST
         await session.commit()
 
+        max_items = WINDOW_MAX_ITEMS.get(time_window)
         try:
             videos_data = await loop.run_in_executor(
-                _executor, list_channel_videos, channel.url
+                _executor, list_channel_videos, channel.url, max_items
             )
         except Exception as exc:
             logger.exception("Failed to list channel videos: %s", exc)
@@ -96,6 +111,16 @@ async def run_channel_pipeline(
         window_start, window_end = compute_time_window(
             time_window, start_date, end_date
         )
+
+        if time_window != "all" and any(
+            v.get("published_at") is None for v in videos_data
+        ):
+            logger.debug(
+                "upload_date unavailable from flat extraction for channel %s; "
+                "recency approximated via playlistend cap (max_items=%s)",
+                channel.url,
+                max_items,
+            )
 
         filtered = [
             v

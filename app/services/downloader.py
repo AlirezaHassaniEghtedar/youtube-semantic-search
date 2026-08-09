@@ -20,57 +20,82 @@ def _parse_upload_date(raw: str | None) -> datetime | None:
         return None
 
 
-def list_channel_videos(url: str) -> list[dict[str, Any]]:
-    """List all videos on a channel via yt-dlp flat-playlist extraction."""
+def _normalize_channel_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.endswith(("/videos", "/streams", "/shorts")):
+        return url
+    return f"{url}/videos"
+
+
+def list_channel_videos(url: str, max_items: int | None = None) -> list[dict[str, Any]]:
+    """List videos on a channel via yt-dlp flat-playlist extraction."""
+    url = _normalize_channel_url(url)
+
     ydl_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
         "extract_flat": "in_playlist",
         "skip_download": True,
         "ignoreerrors": True,
     }
+    if max_items is not None:
+        ydl_opts["playlistend"] = max_items
 
     results: list[dict[str, Any]] = []
     channel_name = ""
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if info is None:
-            return results
+    logger.info("Fetching video list for channel: %s (max_items=%s)", url, max_items)
 
-        channel_name = info.get("channel") or info.get("uploader") or ""
-        entries = info.get("entries") or []
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                logger.error("yt-dlp returned no info for channel URL: %s", url)
+                return results
 
-        for entry in entries:
-            if entry is None:
-                continue
+            channel_name = info.get("channel") or info.get("uploader") or ""
+            raw_entries = info.get("entries") or []
 
-            video_id = entry.get("id") or entry.get("url", "").split("=")[-1]
-            if not video_id or len(video_id) != 11:
-                continue
+            entries: list[dict[str, Any]] = []
+            for e in raw_entries:
+                if e is None:
+                    continue
+                if e.get("entries"):
+                    entries.extend(x for x in e.get("entries") if x)
+                else:
+                    entries.append(e)
 
-            title = entry.get("title") or "Untitled"
-            upload_date = entry.get("upload_date") or entry.get("release_date")
-            published_at = _parse_upload_date(upload_date)
+            for entry in entries:
+                video_id = entry.get("id") or entry.get("url", "").split("=")[-1]
+                if not video_id or len(video_id) != 11:
+                    continue
 
-            duration = entry.get("duration")
-            if duration is None:
-                duration = entry.get("duration_string")
+                title = entry.get("title") or "Untitled"
+                upload_date = entry.get("upload_date") or entry.get("release_date")
+                published_at = _parse_upload_date(upload_date)
 
-            duration_seconds: int | None = None
-            if isinstance(duration, (int, float)):
-                duration_seconds = int(duration)
+                duration = entry.get("duration")
+                if duration is None:
+                    duration = entry.get("duration_string")
 
-            results.append(
-                {
-                    "youtube_video_id": video_id,
-                    "title": title,
-                    "published_at": published_at,
-                    "duration_seconds": duration_seconds,
-                    "channel_name": channel_name,
-                }
-            )
+                duration_seconds: int | None = None
+                if isinstance(duration, (int, float)):
+                    duration_seconds = int(duration)
 
+                results.append(
+                    {
+                        "youtube_video_id": video_id,
+                        "title": title,
+                        "published_at": published_at,
+                        "duration_seconds": duration_seconds,
+                        "channel_name": channel_name,
+                    }
+                )
+    except Exception:
+        logger.exception("Failed to fetch video list for channel URL: %s", url)
+        raise
+
+    logger.info("list_channel_videos: parsed %d videos for %s", len(results), url)
     return results
 
 
