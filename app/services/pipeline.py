@@ -21,9 +21,16 @@ from app.models import (
     utcnow,
 )
 from app.services.captions import fetch_captions
-from app.services.downloader import cleanup_audio_file, download_audio, list_channel_videos
+from app.services.downloader import (
+    BotCheckError,
+    cleanup_audio_file,
+    download_audio,
+    list_channel_videos,
+)
 from app.services.embedder import EmbedderService, serialize_embedding
+from app.services.rate_limiter import GlobalRateLimiter
 from app.services.retry import RateLimitError
+from app.services.rss import fetch_recent_videos_via_rss
 from app.services.transcriber import transcribe
 
 logger = logging.getLogger(__name__)
@@ -33,13 +40,19 @@ _executor = ThreadPoolExecutor(
 )
 
 WINDOW_MAX_ITEMS: dict[str, int | None] = {
-    "24h": 50,
     "7d": 150,
     "30d": 400,
     "custom": 1000,
-    "custom_hours": 300,
     "all": None,
 }
+
+SHORT_WINDOWS = {"24h", "custom_hours"}
+_rate_limiter = GlobalRateLimiter(settings.YT_GLOBAL_MIN_INTERVAL_SECONDS)
+
+
+def _is_short_window(time_window: str) -> bool:
+    """RSS has accurate timestamps, making it suitable for sub-day windows."""
+    return time_window in SHORT_WINDOWS
 
 # The event cannot pre-empt a yt-dlp or Whisper call already running in a
 # worker thread. It does prevent every subsequent stage from starting.
@@ -195,6 +208,27 @@ async def run_channel_pipeline(
                 await session.commit()
                 return
 
+            # Recent RSS entries include precise timestamps. Once yt-dlp has
+            # resolved the UC… channel ID, short windows never need flat-list
+            # pagination (whose entries usually lack publish dates).
+            rss_videos: list[dict] | None = None
+            if _is_short_window(time_window):
+                if channel.youtube_channel_id:
+                    rss_videos = await loop.run_in_executor(
+                        _executor,
+                        fetch_recent_videos_via_rss,
+                        channel.youtube_channel_id,
+                    )
+                if rss_videos is not None:
+                    sync_job.requested_max_items = None
+                    # Force the positional path below to skip; RSS is the
+                    # authoritative source for this short-window request.
+                    max_items = 0
+                else:
+                    # Resolve/cache the channel ID, or recover if RSS is down.
+                    max_items = 50
+                    sync_job.requested_max_items = max_items
+
             playliststart, playlistend, skip_fetch = resolve_fetch_range(
                 channel, max_items
             )
@@ -203,18 +237,25 @@ async def run_channel_pipeline(
                     "Channel %s: requested range already covered; skipping YouTube fetch",
                     channel_id,
                 )
-                videos_data: list[dict] = []
-                sync_job.status = SyncJobStatus.SKIPPED_ALREADY_COVERED
-                sync_job.finished_at = utcnow()
+                videos_data: list[dict] = rss_videos or []
+                if rss_videos is None:
+                    sync_job.status = SyncJobStatus.SKIPPED_ALREADY_COVERED
+                    sync_job.finished_at = utcnow()
             else:
                 try:
-                    videos_data = await loop.run_in_executor(
+                    await _rate_limiter.wait()
+                    listed = await loop.run_in_executor(
                         _executor,
                         list_channel_videos,
                         channel.url,
                         playlistend,
                         playliststart,
                     )
+                    videos_data = listed.videos
+                    channel.youtube_channel_id = (
+                        listed.channel_id or channel.youtube_channel_id
+                    )
+                    channel.name = listed.channel_name or channel.name
                 except RateLimitError as exc:
                     message = "YouTube rate-limited this IP — wait before retrying"
                     logger.error("%s: %s", message, exc)
@@ -433,9 +474,14 @@ async def _process_single_video(
                 logger.info("Video %s status: transcribing (captions)", youtube_video_id)
                 await session.commit()
             try:
-                segments_data = await loop.run_in_executor(
-                    _executor, fetch_captions, youtube_video_id
-                )
+                # Caption requests are network calls too; keep them bounded so
+                # a large batch does not create an API burst before downloads.
+                async with download_sem:
+                    if await should_stop():
+                        return
+                    segments_data = await loop.run_in_executor(
+                        _executor, fetch_captions, youtube_video_id
+                    )
             except RateLimitError as exc:
                 state.trip(str(exc))
                 await _restore_pending(video_id)
@@ -465,9 +511,24 @@ async def _process_single_video(
                 async with download_sem:
                     if await should_stop():
                         return
+                    await _rate_limiter.wait()
                     audio_path = await loop.run_in_executor(
                         _executor, download_audio, youtube_video_id
                     )
+            except BotCheckError as exc:
+                _rate_limiter.increase_interval()
+                logger.error(
+                    "YouTube bot-check triggered on video %s. Increased global request "
+                    "spacing to %.1fs; pausing this channel for %d minutes. "
+                    "Set YT_COOKIES_FILE in .env if this keeps happening. Error: %s",
+                    youtube_video_id,
+                    _rate_limiter.min_interval,
+                    settings.BOT_CHECK_COOLDOWN_MINUTES,
+                    exc,
+                )
+                state.trip(str(exc))
+                await _restore_pending(video_id)
+                return
             except RateLimitError as exc:
                 logger.error("YouTube rate limit on video %s: %s", youtube_video_id, exc)
                 state.trip(str(exc))

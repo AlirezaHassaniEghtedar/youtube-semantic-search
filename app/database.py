@@ -34,6 +34,7 @@ async def ensure_columns() -> None:
         "channels": [
             ("last_synced_item_count", "INTEGER"),
             ("synced_all", "BOOLEAN DEFAULT 0"),
+            ("youtube_channel_id", "TEXT"),
         ],
     }
     async with engine.begin() as conn:

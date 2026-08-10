@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     DOWNLOAD_JITTER_MIN_SECONDS: float = 1.0
     DOWNLOAD_JITTER_MAX_SECONDS: float = 4.0
     BOT_CHECK_COOLDOWN_MINUTES: int = 15
+    # Shared across all channel listings and audio downloads in this process.
+    YT_GLOBAL_MIN_INTERVAL_SECONDS: float = 2.0
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )

@@ -68,6 +68,8 @@ class Channel(Base):
     )
     last_synced_item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     synced_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Resolved once by yt-dlp and then reused for precise recent-video RSS reads.
+    youtube_channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

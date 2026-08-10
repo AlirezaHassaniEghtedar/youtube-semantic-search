@@ -157,14 +157,30 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | Maximum simultaneous audio downloads; raising it increases YouTube rate-limit risk |
 | `MAX_CONCURRENT_TRANSCRIBE` | `2` | Maximum simultaneous Whisper transcriptions |
 | `PREFER_CAPTIONS` | `true` | Use existing YouTube captions before downloading audio and transcribing |
-| `YT_COOKIES_FROM_BROWSER` | empty | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
-| `YT_COOKIES_FILE` | empty | Optional Netscape-format cookies.txt file, used instead of browser cookies |
+| `YT_COOKIES_FROM_BROWSER` | empty | Optional browser-cookie fallback for yt-dlp; a static cookie file is more reliable |
+| `YT_COOKIES_FILE` | empty | Recommended: Netscape-format `cookies.txt` file for authenticated yt-dlp requests |
 | `DOWNLOAD_JITTER_MIN_SECONDS` / `DOWNLOAD_JITTER_MAX_SECONDS` | `1.0` / `4.0` | Random delay before downloads to avoid request bursts |
 | `BOT_CHECK_COOLDOWN_MINUTES` | `15` | How long a batch backs off after a bot-check response |
+| `YT_GLOBAL_MIN_INTERVAL_SECONDS` | `2.0` | Minimum spacing between every yt-dlp listing or download in one app session |
 | `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | sentence-transformers model |
 | `DOWNLOAD_DIR` | `./downloads` | Temporary audio storage (deleted after transcription) |
 | `MAX_SEARCH_RESULTS` | `20` | Default search result limit |
 | `DEFAULT_TIME_WINDOW` | `7d` | Default time window |
+
+---
+
+## Reducing YouTube rate-limit risk
+
+The best defense is to use a logged-in YouTube session through a static cookies file:
+
+1. Install a browser extension such as **Get cookies.txt LOCALLY**.
+2. Log into YouTube in that browser and export the cookies for `youtube.com`.
+3. Save the export as `cookies.txt` in the project root.
+4. Set `YT_COOKIES_FILE=./cookies.txt` in `.env` and keep the file private. It contains live session credentials and is ignored by Git.
+
+This is more reliable for a long-running desktop app than `cookiesfrombrowser`, which may fail while a browser has its cookie database locked. Authenticated automated use remains your responsibility and may carry account and YouTube Terms-of-Service risk.
+
+Keep `MAX_CONCURRENT_DOWNLOADS` conservative (the default is `2`). Short windows—Last 24 hours and Custom hours—automatically use YouTube's lightweight RSS feed, which has accurate publication times and avoids channel-list pagination. If YouTube still reports a bot check, the app pauses the affected channel and increases the request spacing for the rest of the session; cookies remain the durable remedy.
 
 ---
 
@@ -222,7 +238,7 @@ You can bundle the app with PyInstaller for distribution without requiring Pytho
 | **Model download fails** | Check internet connection. Retry after connectivity is restored. |
 | **Video shows Error status** | Video may be private, deleted, or age-restricted. Other videos continue processing. |
 | **Slow transcription** | Use a smaller Whisper model (`tiny` or `base`) in `.env`. CPU transcription is inherently slow. |
-| **"Sign in to confirm you're not a bot" or many videos fail together** | YouTube has rate-limited the IP. Wait before retrying, keep `MAX_CONCURRENT_DOWNLOADS` low, and optionally set `YT_COOKIES_FROM_BROWSER=chrome` (or another browser where you are logged in). Cookie-based automated access is your responsibility and may carry account/Terms-of-Service risk. |
+| **"Sign in to confirm you're not a bot" or many videos fail together** | YouTube has rate-limited the IP. Wait before retrying, keep `MAX_CONCURRENT_DOWNLOADS` low, and preferably configure `YT_COOKIES_FILE` using the steps above. |
 | **App window blank on launch** | Wait up to 15 seconds for models to load. Check logs in the terminal if running manually. |
 
 ---

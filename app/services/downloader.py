@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,15 @@ class BotCheckError(RateLimitError):
 
 
 _BOT_CHECK_MARKERS = ("sign in to confirm", "not a bot")
+
+
+@dataclass
+class ChannelListResult:
+    """Flat channel entries plus metadata needed by the RSS fast path."""
+
+    videos: list[dict[str, Any]]
+    channel_id: str | None
+    channel_name: str
 
 
 def _base_ydl_opts() -> dict[str, Any]:
@@ -62,7 +72,7 @@ def list_channel_videos(
     url: str,
     max_items: int | None = None,
     start_item: int | None = None,
-) -> list[dict[str, Any]]:
+) -> ChannelListResult:
     """List videos on a channel via yt-dlp flat-playlist extraction."""
     url = _normalize_channel_url(url)
 
@@ -81,6 +91,7 @@ def list_channel_videos(
 
     results: list[dict[str, Any]] = []
     channel_name = ""
+    resolved_channel_id: str | None = None
 
     logger.info(
         "Fetching video list for channel: %s (start_item=%s, max_items=%s)",
@@ -94,9 +105,10 @@ def list_channel_videos(
             info = with_backoff(lambda: ydl.extract_info(url, download=False))
             if info is None:
                 logger.error("yt-dlp returned no info for channel URL: %s", url)
-                return results
+                return ChannelListResult(results, None, channel_name)
 
             channel_name = info.get("channel") or info.get("uploader") or ""
+            resolved_channel_id = info.get("channel_id")
             raw_entries = info.get("entries") or []
 
             entries: list[dict[str, Any]] = []
@@ -142,7 +154,7 @@ def list_channel_videos(
         raise
 
     logger.info("list_channel_videos: parsed %d videos for %s", len(results), url)
-    return results
+    return ChannelListResult(results, resolved_channel_id, channel_name)
 
 
 def download_audio(youtube_video_id: str) -> Path:
