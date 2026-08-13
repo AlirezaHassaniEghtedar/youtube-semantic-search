@@ -46,5 +46,11 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @property
+    def embedding_model_path(self) -> str:
+        local_path = Path("models")
+        if local_path.exists() and any(local_path.iterdir()):
+            return str(local_path.resolve())
+        return self.EMBEDDING_MODEL
 
 settings = Settings()
