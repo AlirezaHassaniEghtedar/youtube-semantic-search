@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     YT_DLP_COOKIES_FROM_BROWSER: str | None = None
     DOWNLOAD_JITTER_MIN_SECONDS: float = 1.0
     DOWNLOAD_JITTER_MAX_SECONDS: float = 4.0
+    MAX_CONCURRENT_CAPTIONS: int = 2
+    CAPTIONS_JITTER_MIN_SECONDS: float = 1.0
+    CAPTIONS_JITTER_MAX_SECONDS: float = 3.0
+    CAPTIONS_SKIP_MINUTES: int = 10
     BOT_CHECK_COOLDOWN_MINUTES: int = 15
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

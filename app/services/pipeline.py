@@ -25,6 +25,7 @@ from app.services.downloader import cleanup_audio_file, download_audio, list_cha
 from app.services.embedder import EmbedderService, serialize_embedding
 from app.services.retry import RateLimitError
 from app.services.transcriber import transcribe
+from app.services.text_processor import chunk
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ def _clear_stop_event(channel_id: UUID) -> None:
 class ProcessingState:
     blocked_until: datetime | None = None
     rate_limit_error: str | None = None
+    captions_blocked_until: datetime | None = None
 
     def is_blocked(self) -> bool:
         return self.blocked_until is not None and utcnow() < self.blocked_until
@@ -81,6 +83,18 @@ class ProcessingState:
     def trip(self, message: str) -> None:
         self.blocked_until = utcnow() + timedelta(
             minutes=settings.BOT_CHECK_COOLDOWN_MINUTES
+        )
+        self.rate_limit_error = message
+
+    def captions_blocked(self) -> bool:
+        return (
+            self.captions_blocked_until is not None
+            and utcnow() < self.captions_blocked_until
+        )
+
+    def trip_captions(self, message: str) -> None:
+        self.captions_blocked_until = utcnow() + timedelta(
+            minutes=settings.CAPTIONS_SKIP_MINUTES
         )
         self.rate_limit_error = message
 
@@ -370,6 +384,7 @@ async def _process_pending_videos(
         )
         videos = list(result.scalars())
 
+    captions_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_CAPTIONS)
     download_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
     transcribe_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_TRANSCRIBE)
     tasks = [
@@ -379,6 +394,7 @@ async def _process_pending_videos(
             whisper_model,
             embedder,
             loop,
+            captions_sem,
             download_sem,
             transcribe_sem,
             state,
@@ -397,6 +413,7 @@ async def _process_single_video(
     whisper_model,
     embedder: EmbedderService,
     loop: asyncio.AbstractEventLoop,
+    captions_sem: asyncio.Semaphore,
     download_sem: asyncio.Semaphore,
     transcribe_sem: asyncio.Semaphore,
     state: ProcessingState,
@@ -422,7 +439,7 @@ async def _process_single_video(
             await session.commit()
 
         segments_data = None
-        if settings.PREFER_CAPTIONS:
+        if settings.PREFER_CAPTIONS and not state.captions_blocked():
             if await should_stop():
                 return
             async with async_session_factory() as session:
@@ -432,14 +449,32 @@ async def _process_single_video(
                 video.status = VideoStatus.TRANSCRIBING
                 logger.info("Video %s status: transcribing (captions)", youtube_video_id)
                 await session.commit()
-            try:
-                segments_data = await loop.run_in_executor(
-                    _executor, fetch_captions, youtube_video_id
+
+            await asyncio.sleep(
+                random.uniform(
+                    settings.CAPTIONS_JITTER_MIN_SECONDS,
+                    settings.CAPTIONS_JITTER_MAX_SECONDS,
                 )
-            except RateLimitError as exc:
-                state.trip(str(exc))
-                await _restore_pending(video_id)
+            )
+            if await should_stop():
                 return
+            try:
+                async with captions_sem:
+                    if await should_stop():
+                        return
+                    segments_data = await loop.run_in_executor(
+                        _executor, fetch_captions, youtube_video_id
+                    )
+            except RateLimitError as exc:
+                logger.warning(
+                    "Possible caption block on video %s: %s. Skipping "
+                    "captions for %d minutes and using Whisper instead.",
+                    youtube_video_id,
+                    exc,
+                    settings.CAPTIONS_SKIP_MINUTES,
+                )
+                state.trip_captions(str(exc))
+                segments_data = None
 
         if segments_data is None:
             if await should_stop():
@@ -501,6 +536,15 @@ async def _process_single_video(
                 if video:
                     video.status = VideoStatus.DONE
                     logger.info("Video %s status: done (no segments)", youtube_video_id)
+                    await session.commit()
+            return
+
+        segments_data = chunk(segments_data, chunk_size=500, chunk_overlap=100)
+        if not segments_data:
+            async with async_session_factory() as session:
+                video = await session.get(Video, video_id)
+                if video:
+                    video.status = VideoStatus.DONE
                     await session.commit()
             return
 
