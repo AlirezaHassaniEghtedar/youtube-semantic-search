@@ -26,9 +26,14 @@ class Settings(BaseSettings):
     YT_DLP_COOKIES_FROM_BROWSER: str | None = None
     DOWNLOAD_JITTER_MIN_SECONDS: float = 1.0
     DOWNLOAD_JITTER_MAX_SECONDS: float = 4.0
+    MAX_CONCURRENT_CAPTIONS: int = 2
+    CAPTIONS_JITTER_MIN_SECONDS: float = 1.0
+    CAPTIONS_JITTER_MAX_SECONDS: float = 3.0
+    CAPTIONS_SKIP_MINUTES: int = 10
     BOT_CHECK_COOLDOWN_MINUTES: int = 15
-    # Shared across all channel listings and audio downloads in this process.
-    YT_GLOBAL_MIN_INTERVAL_SECONDS: float = 2.0
+    BOT_CHECK_COOLDOWN_MAX_MINUTES: int = 120
+    YT_GLOBAL_MIN_INTERVAL_SECONDS: float = 2.5
+    MAX_CONSECUTIVE_RATE_LIMITS: int = 3
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -48,5 +53,11 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @property
+    def embedding_model_path(self) -> str:
+        local_path = Path("models")
+        if local_path.exists() and any(local_path.iterdir()):
+            return str(local_path.resolve())
+        return self.EMBEDDING_MODEL
 
 settings = Settings()

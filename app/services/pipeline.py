@@ -22,16 +22,20 @@ from app.models import (
 )
 from app.services.captions import fetch_captions
 from app.services.downloader import (
-    BotCheckError,
+    NARROW_DATE_WINDOWS,
     cleanup_audio_file,
     download_audio,
+    fetch_channel_rss_videos,
     list_channel_videos,
+    merge_rss_dates,
+    rss_covers_window,
 )
 from app.services.embedder import EmbedderService, serialize_embedding
 from app.services.rate_limiter import GlobalRateLimiter
 from app.services.retry import RateLimitError
 from app.services.rss import fetch_recent_videos_via_rss
 from app.services.transcriber import transcribe
+from app.services.text_processor import chunk
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,36 @@ def _is_short_window(time_window: str) -> bool:
 # The event cannot pre-empt a yt-dlp or Whisper call already running in a
 # worker thread. It does prevent every subsequent stage from starting.
 _stop_events: dict[UUID, asyncio.Event] = {}
+
+# Consecutive YouTube blocks per channel, used to grow BOT_CHECK_COOLDOWN_MINUTES.
+_block_streaks: dict[UUID, tuple[int, datetime]] = {}
+_BLOCK_STREAK_RESET = timedelta(hours=6)
+
+
+def _cooldown_minutes_for_channel(channel_id: UUID) -> int:
+    now = utcnow()
+    previous = _block_streaks.get(channel_id)
+    if previous is None or now - previous[1] > _BLOCK_STREAK_RESET:
+        count = 1
+    else:
+        count = previous[0] + 1
+    _block_streaks[channel_id] = (count, now)
+    minutes = min(
+        settings.BOT_CHECK_COOLDOWN_MINUTES * (2 ** (count - 1)),
+        settings.BOT_CHECK_COOLDOWN_MAX_MINUTES,
+    )
+    logger.warning(
+        "Channel %s YouTube block streak=%d; cooldown=%d minutes (cap=%d)",
+        channel_id,
+        count,
+        minutes,
+        settings.BOT_CHECK_COOLDOWN_MAX_MINUTES,
+    )
+    return minutes
+
+
+def _reset_block_streak(channel_id: UUID) -> None:
+    _block_streaks.pop(channel_id, None)
 
 
 def _new_stop_event(channel_id: UUID) -> asyncio.Event:
@@ -87,15 +121,58 @@ def _clear_stop_event(channel_id: UUID) -> None:
 class ProcessingState:
     blocked_until: datetime | None = None
     rate_limit_error: str | None = None
+    captions_blocked_until: datetime | None = None
+    consecutive_rate_limits: int = 0
+    channel_id: UUID | None = None
 
     def is_blocked(self) -> bool:
         return self.blocked_until is not None and utcnow() < self.blocked_until
 
     def trip(self, message: str) -> None:
-        self.blocked_until = utcnow() + timedelta(
-            minutes=settings.BOT_CHECK_COOLDOWN_MINUTES
+        minutes = (
+            _cooldown_minutes_for_channel(self.channel_id)
+            if self.channel_id is not None
+            else settings.BOT_CHECK_COOLDOWN_MINUTES
+        )
+        self.blocked_until = utcnow() + timedelta(minutes=minutes)
+        self.rate_limit_error = message
+        logger.error(
+            "Aborting remaining YouTube requests for this sync; cooldown until %s",
+            self.blocked_until,
+        )
+
+    def captions_blocked(self) -> bool:
+        return (
+            self.captions_blocked_until is not None
+            and utcnow() < self.captions_blocked_until
+        )
+
+    def trip_captions(self, message: str) -> None:
+        self.captions_blocked_until = utcnow() + timedelta(
+            minutes=settings.CAPTIONS_SKIP_MINUTES
         )
         self.rate_limit_error = message
+
+    def note_success(self) -> None:
+        self.consecutive_rate_limits = 0
+
+    def note_rate_limit(self, message: str, *, from_captions: bool) -> None:
+        self.consecutive_rate_limits += 1
+        logger.warning(
+            "Rate-limit failure %d/%d in this sync",
+            self.consecutive_rate_limits,
+            settings.MAX_CONSECUTIVE_RATE_LIMITS,
+        )
+        hit_cap = self.consecutive_rate_limits >= settings.MAX_CONSECUTIVE_RATE_LIMITS
+        if from_captions and not hit_cap:
+            self.trip_captions(message)
+            return
+        if from_captions and hit_cap:
+            logger.error(
+                "Too many consecutive caption rate-limits; aborting the rest of this "
+                "channel sync instead of falling through to audio downloads"
+            )
+        self.trip(message)
 
 
 def compute_time_window(
@@ -146,14 +223,18 @@ def resolve_fetch_range(
     return already + 1, requested_max_items, False
 
 
+# NOTE: yt-dlp extract_flat almost never returns upload_date, so published_at
+# is usually missing on playlist entries. Narrow windows (24h/7d/30d/
+# custom_hours) prefer YouTube's channel RSS feed, which includes a real
+# pubDate for the latest ~15 videos. When RSS covers the window, we filter
+# by that date. When RSS is incomplete or fails, we fall back to the
+# newest-first playlist cap (WINDOW_MAX_ITEMS) and only apply a date check
+# to rows that actually have published_at. "all" never date-filters.
 def _video_in_window(
     published_at: datetime | None,
     window_start: datetime | None,
     window_end: datetime | None,
 ) -> bool:
-    # extract_flat normally has no upload_date. In that case the playlist cap
-    # is our recency approximation; a present date remains a useful secondary
-    # filter.
     if window_start is None and window_end is None:
         return True
     if published_at is None:
@@ -208,29 +289,16 @@ async def run_channel_pipeline(
                 await session.commit()
                 return
 
-            # Recent RSS entries include precise timestamps. Once yt-dlp has
-            # resolved the UC… channel ID, short windows never need flat-list
-            # pagination (whose entries usually lack publish dates).
-            rss_videos: list[dict] | None = None
-            if _is_short_window(time_window):
-                if channel.youtube_channel_id:
-                    rss_videos = await loop.run_in_executor(
-                        _executor,
-                        fetch_recent_videos_via_rss,
-                        channel.youtube_channel_id,
-                    )
-                if rss_videos is not None:
-                    sync_job.requested_max_items = None
-                    # Force the positional path below to skip; RSS is the
-                    # authoritative source for this short-window request.
-                    max_items = 0
-                else:
-                    # Resolve/cache the channel ID, or recover if RSS is down.
-                    max_items = 50
-                    sync_job.requested_max_items = max_items
-
+            window_start, window_end = compute_time_window(
+                time_window, start_date, end_date, custom_hours
+            )
             playliststart, playlistend, skip_fetch = resolve_fetch_range(
                 channel, max_items
+            )
+            date_filter_mode = (
+                "none"
+                if time_window == "all"
+                else "playlist_cap_approximation"
             )
             if skip_fetch:
                 logger.info(
@@ -243,19 +311,69 @@ async def run_channel_pipeline(
                     sync_job.finished_at = utcnow()
             else:
                 try:
-                    await _rate_limiter.wait()
-                    listed = await loop.run_in_executor(
-                        _executor,
-                        list_channel_videos,
-                        channel.url,
-                        playlistend,
-                        playliststart,
-                    )
-                    videos_data = listed.videos
-                    channel.youtube_channel_id = (
-                        listed.channel_id or channel.youtube_channel_id
-                    )
-                    channel.name = listed.channel_name or channel.name
+                    rss_videos = None
+                    videos_data = []
+                    rss_complete = False
+                    if time_window in NARROW_DATE_WINDOWS:
+                        rss_videos = await loop.run_in_executor(
+                            _executor, fetch_channel_rss_videos, channel.url
+                        )
+                        if stop_event.is_set():
+                            channel.status = ChannelStatus.STOPPED
+                            sync_job.status = SyncJobStatus.STOPPED
+                            sync_job.finished_at = utcnow()
+                            await session.commit()
+                            return
+                        if not rss_videos:
+                            logger.warning(
+                                "RSS listing failed or empty for %s; falling back to "
+                                "flat playlist (date filter mode=playlist_cap_approximation)",
+                                channel.url,
+                            )
+                        elif rss_covers_window(rss_videos, window_start):
+                            rss_complete = True
+                            date_filter_mode = "rss"
+                            videos_data = rss_videos
+                            logger.info(
+                                "Date filter mode=rss for %s (%d RSS entries cover the window)",
+                                channel.url,
+                                len(rss_videos),
+                            )
+                        else:
+                            logger.info(
+                                "RSS oldest pubDate is still inside the window for %s; "
+                                "merging RSS dates into the flat playlist",
+                                channel.url,
+                            )
+
+                    if not rss_complete:
+                        videos_data = await loop.run_in_executor(
+                            _executor,
+                            list_channel_videos,
+                            channel.url,
+                            playlistend,
+                            playliststart,
+                        )
+                        if rss_videos:
+                            merged = merge_rss_dates(videos_data, rss_videos)
+                            date_filter_mode = "rss+flat"
+                            logger.info(
+                                "Merged RSS pubDate onto %d flat entries; "
+                                "date filter mode=rss+flat for %s",
+                                merged,
+                                channel.url,
+                            )
+                        else:
+                            date_filter_mode = (
+                                "none"
+                                if time_window == "all"
+                                else "playlist_cap_approximation"
+                            )
+                            logger.info(
+                                "Date filter mode=%s for %s",
+                                date_filter_mode,
+                                channel.url,
+                            )
                 except RateLimitError as exc:
                     message = "YouTube rate-limited this IP — wait before retrying"
                     logger.error("%s: %s", message, exc)
@@ -294,15 +412,18 @@ async def run_channel_pipeline(
             if videos_data:
                 channel.name = videos_data[0].get("channel_name") or channel.name
 
-            window_start, window_end = compute_time_window(
-                time_window, start_date, end_date, custom_hours
+            dated = sum(1 for video in videos_data if video.get("published_at") is not None)
+            logger.info(
+                "Channel %s listing complete: mode=%s, %d/%d videos have published_at",
+                channel.url,
+                date_filter_mode,
+                dated,
+                len(videos_data),
             )
-            if time_window != "all" and any(
-                video.get("published_at") is None for video in videos_data
-            ):
-                logger.debug(
-                    "Flat yt-dlp entries have no upload date for %s; using playlist slice for recency",
-                    channel.url,
+            if date_filter_mode != "rss" and time_window != "all" and dated < len(videos_data):
+                logger.info(
+                    "Videos without published_at are kept via playlist-cap fallback "
+                    "(extract_flat does not provide upload_date)"
                 )
             filtered = [
                 video
@@ -411,6 +532,7 @@ async def _process_pending_videos(
         )
         videos = list(result.scalars())
 
+    captions_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_CAPTIONS)
     download_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
     transcribe_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_TRANSCRIBE)
     tasks = [
@@ -420,6 +542,7 @@ async def _process_pending_videos(
             whisper_model,
             embedder,
             loop,
+            captions_sem,
             download_sem,
             transcribe_sem,
             state,
@@ -438,6 +561,7 @@ async def _process_single_video(
     whisper_model,
     embedder: EmbedderService,
     loop: asyncio.AbstractEventLoop,
+    captions_sem: asyncio.Semaphore,
     download_sem: asyncio.Semaphore,
     transcribe_sem: asyncio.Semaphore,
     state: ProcessingState,
@@ -463,7 +587,7 @@ async def _process_single_video(
             await session.commit()
 
         segments_data = None
-        if settings.PREFER_CAPTIONS:
+        if settings.PREFER_CAPTIONS and not state.captions_blocked():
             if await should_stop():
                 return
             async with async_session_factory() as session:
@@ -473,19 +597,32 @@ async def _process_single_video(
                 video.status = VideoStatus.TRANSCRIBING
                 logger.info("Video %s status: transcribing (captions)", youtube_video_id)
                 await session.commit()
+
+            await asyncio.sleep(
+                random.uniform(
+                    settings.CAPTIONS_JITTER_MIN_SECONDS,
+                    settings.CAPTIONS_JITTER_MAX_SECONDS,
+                )
+            )
+            if await should_stop():
+                return
             try:
-                # Caption requests are network calls too; keep them bounded so
-                # a large batch does not create an API burst before downloads.
-                async with download_sem:
+                async with captions_sem:
                     if await should_stop():
                         return
                     segments_data = await loop.run_in_executor(
                         _executor, fetch_captions, youtube_video_id
                     )
             except RateLimitError as exc:
-                state.trip(str(exc))
-                await _restore_pending(video_id)
-                return
+                logger.warning(
+                    "Possible caption block on video %s: %s. Skipping "
+                    "captions for %d minutes and using Whisper instead.",
+                    youtube_video_id,
+                    exc,
+                    settings.CAPTIONS_SKIP_MINUTES,
+                )
+                state.trip_captions(str(exc))
+                segments_data = None
 
         if segments_data is None:
             if await should_stop():
@@ -562,6 +699,15 @@ async def _process_single_video(
                 if video:
                     video.status = VideoStatus.DONE
                     logger.info("Video %s status: done (no segments)", youtube_video_id)
+                    await session.commit()
+            return
+
+        segments_data = chunk(segments_data, chunk_size=500, chunk_overlap=100)
+        if not segments_data:
+            async with async_session_factory() as session:
+                video = await session.get(Video, video_id)
+                if video:
+                    video.status = VideoStatus.DONE
                     await session.commit()
             return
 

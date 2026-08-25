@@ -9,6 +9,7 @@ from youtube_transcript_api import (
 )
 
 from app.services.retry import RateLimitError, looks_like_rate_limit, with_backoff
+from app.services.youtube_pace import pace_youtube_request
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
         # instance method; support both forms so dependency upgrades do not
         # disable the optional captions fast path.
         def get_transcript_list():
+            pace_youtube_request(f"captions_list:{youtube_video_id}")
             if hasattr(YouTubeTranscriptApi, "list_transcripts"):
                 return YouTubeTranscriptApi.list_transcripts(youtube_video_id)
             return YouTubeTranscriptApi().list(youtube_video_id)
@@ -45,7 +47,11 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
                 logger.info("No captions available for %s", youtube_video_id)
                 return None
 
-        fetched = with_backoff(transcript.fetch)
+        def fetch_transcript():
+            pace_youtube_request(f"captions_fetch:{youtube_video_id}")
+            return transcript.fetch()
+
+        fetched = with_backoff(fetch_transcript)
         raw = fetched.to_raw_data() if hasattr(fetched, "to_raw_data") else fetched
     except (TranscriptsDisabled, VideoUnavailable, NoTranscriptFound):
         logger.info("Captions disabled/unavailable for %s", youtube_video_id)
@@ -53,8 +59,12 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
     except Exception as exc:
         if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
             raise RateLimitError(str(exc)) from exc
-        logger.exception("Unexpected error fetching captions for %s", youtube_video_id)
-        return None
+        logger.exception(
+            "Unexpected error fetching captions for %s; treating as a possible "
+            "block rather than falling back to Whisper",
+            youtube_video_id,
+        )
+        raise RateLimitError(str(exc)) from exc
 
     segments: list[dict[str, Any]] = []
     for entry in raw:
