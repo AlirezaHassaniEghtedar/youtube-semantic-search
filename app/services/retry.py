@@ -15,18 +15,6 @@ RATE_LIMIT_MARKERS = (
     "sign in to confirm",
     "not a bot",
     "too many requests",
-    "block",
-    "ip",
-    "captcha",
-    "unusual traffic",
-)
-
-RATE_LIMIT_EXCEPTION_NAMES = (
-    "ipblocked",
-    "requestblocked",
-    "toomanyrequests",
-    "youtuberequestfailed",
-    "couldnotretrievetranscript",
 )
 
 
@@ -35,8 +23,6 @@ class RateLimitError(Exception):
 
 
 def looks_like_rate_limit(exc: Exception) -> bool:
-    if type(exc).__name__.lower() in RATE_LIMIT_EXCEPTION_NAMES:
-        return True
     return any(marker in str(exc).lower() for marker in RATE_LIMIT_MARKERS)
 
 

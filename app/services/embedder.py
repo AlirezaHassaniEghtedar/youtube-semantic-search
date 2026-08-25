@@ -11,7 +11,7 @@ class EmbedderService:
         self._model: SentenceTransformer | None = None
 
     def load(self) -> None:
-        self._model = SentenceTransformer(settings.embedding_model_path)
+        self._model = SentenceTransformer(settings.EMBEDDING_MODEL)
 
     @property
     def model(self) -> SentenceTransformer:

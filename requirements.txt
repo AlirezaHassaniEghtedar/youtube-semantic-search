@@ -14,4 +14,3 @@ python-dotenv
 pywebview
 httpx
 python-dateutil
-langchain-text-splitters

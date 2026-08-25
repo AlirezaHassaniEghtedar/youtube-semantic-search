@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     app.state.whisper = whisper_model
     logger.info("Whisper model loaded.")
 
-    logger.info("Loading embedding model (%s)...", settings.embedding_model_path)
+    logger.info("Loading embedding model (%s)...", settings.EMBEDDING_MODEL)
     embedder = EmbedderService()
     embedder.load()
     app.state.embedder = embedder

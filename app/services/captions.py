@@ -53,12 +53,8 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
     except Exception as exc:
         if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
             raise RateLimitError(str(exc)) from exc
-        logger.exception(
-            "Unexpected error fetching captions for %s; treating as a possible "
-            "block rather than falling back to Whisper",
-            youtube_video_id,
-        )
-        raise RateLimitError(str(exc)) from exc
+        logger.exception("Unexpected error fetching captions for %s", youtube_video_id)
+        return None
 
     segments: list[dict[str, Any]] = []
     for entry in raw:
