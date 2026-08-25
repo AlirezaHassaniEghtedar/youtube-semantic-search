@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     CAPTIONS_JITTER_MAX_SECONDS: float = 3.0
     CAPTIONS_SKIP_MINUTES: int = 10
     BOT_CHECK_COOLDOWN_MINUTES: int = 15
+    BOT_CHECK_COOLDOWN_MAX_MINUTES: int = 120
+    YT_GLOBAL_MIN_INTERVAL_SECONDS: float = 2.5
+    MAX_CONSECUTIVE_RATE_LIMITS: int = 3
     EMBEDDING_MODEL: str = (
         "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
