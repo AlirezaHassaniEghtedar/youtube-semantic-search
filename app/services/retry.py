@@ -4,6 +4,8 @@ import time
 from collections.abc import Callable
 from typing import TypeVar
 
+from app.services.live_detection import is_upcoming_event_error
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -35,6 +37,10 @@ class RateLimitError(Exception):
 
 
 def looks_like_rate_limit(exc: Exception) -> bool:
+    # Scheduled streams are expected, not transient failures. In particular,
+    # youtube-transcript-api can use a broad exception class for them.
+    if is_upcoming_event_error(exc):
+        return False
     if type(exc).__name__.lower() in RATE_LIMIT_EXCEPTION_NAMES:
         return True
     return any(marker in str(exc).lower() for marker in RATE_LIMIT_MARKERS)

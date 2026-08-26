@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -30,14 +29,8 @@ class BotCheckError(RateLimitError):
 
 _BOT_CHECK_MARKERS = ("sign in to confirm", "not a bot")
 
-
-@dataclass
-class ChannelListResult:
-    """Flat channel entries plus metadata needed by the RSS fast path."""
-
-    videos: list[dict[str, Any]]
-    channel_id: str | None
-    channel_name: str
+_UPCOMING_LIVE_STATUSES = frozenset({"is_upcoming", "upcoming"})
+_STREAMED_LIVE_STATUSES = frozenset({"was_live", "post_live"})
 
 
 def _base_ydl_opts() -> dict[str, Any]:
@@ -85,6 +78,52 @@ def _parse_rss_datetime(raw: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_release_datetime(
+    release_timestamp: int | float | None, release_date: str | None
+) -> datetime | None:
+    if isinstance(release_timestamp, (int, float)):
+        return datetime.fromtimestamp(release_timestamp, tz=timezone.utc)
+    return _parse_upload_date(release_date)
+
+
+def _normalize_live_status(value: Any) -> str:
+    """Normalize yt-dlp's values to the statuses persisted by this app."""
+    status = str(value or "").lower()
+    if status in _UPCOMING_LIVE_STATUSES:
+        return "upcoming"
+    if status in _STREAMED_LIVE_STATUSES:
+        return "was_live"
+    if status == "is_live":
+        return "is_live"
+    return "none"
+
+
+def classify_video_type(entry: dict[str, Any]) -> str:
+    """Classify a listing entry using yt-dlp metadata and a modest Shorts heuristic."""
+    live_status = _normalize_live_status(entry.get("live_status"))
+    if live_status == "upcoming":
+        return "upcoming event"
+    if live_status == "was_live":
+        return "streamed video"
+
+    url = str(
+        entry.get("webpage_url")
+        or entry.get("original_url")
+        or entry.get("url")
+        or ""
+    ).lower()
+    if "/shorts/" in url:
+        return "short video"
+
+    duration = entry.get("duration_seconds", entry.get("duration"))
+    # Flat playlist entries normally lack aspect-ratio metadata. A <=60-second
+    # video is therefore only a best-effort Shorts signal: ordinary short clips
+    # can be misclassified when no /shorts/ URL is available.
+    if isinstance(duration, (int, float)) and duration <= 60:
+        return "short video"
+    return "long video"
+
+
 def _normalize_channel_url(url: str) -> str:
     url = url.strip().rstrip("/")
     if url.endswith(("/videos", "/streams", "/shorts")):
@@ -103,6 +142,10 @@ def _video_record(
     published_at: datetime | None,
     duration_seconds: int | None,
     channel_name: str,
+    *,
+    live_status: str | None = None,
+    scheduled_start_at: datetime | None = None,
+    webpage_url: str | None = None,
 ) -> dict[str, Any]:
     return {
         "youtube_video_id": video_id,
@@ -110,6 +153,9 @@ def _video_record(
         "published_at": published_at,
         "duration_seconds": duration_seconds,
         "channel_name": channel_name,
+        "live_status": _normalize_live_status(live_status),
+        "scheduled_start_at": scheduled_start_at,
+        "webpage_url": webpage_url,
     }
 
 
@@ -213,45 +259,42 @@ def fetch_channel_rss_videos(url: str) -> list[dict[str, Any]] | None:
     return results
 
 
-def merge_rss_dates(
-    videos: list[dict[str, Any]], rss_videos: list[dict[str, Any]]
-) -> int:
-    """Copy RSS pubDate onto matching flat-playlist rows. Returns merge count."""
-    by_id = {item["youtube_video_id"]: item for item in rss_videos}
-    merged = 0
-    for video in videos:
-        rss = by_id.get(video["youtube_video_id"])
-        if rss and rss.get("published_at") and not video.get("published_at"):
-            video["published_at"] = rss["published_at"]
-            if not video.get("channel_name") and rss.get("channel_name"):
-                video["channel_name"] = rss["channel_name"]
-            merged += 1
-    return merged
+def merge_rss_and_flat(
+    flat_videos: list[dict[str, Any]], rss_videos: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge RSS and flat entries, retaining flat-only and RSS-only videos.
 
-
-def rss_covers_window(
-    rss_videos: list[dict[str, Any]], window_start: datetime | None
-) -> bool:
-    """True when the oldest RSS pubDate is already older than the window start.
-
-    YouTube RSS only exposes ~15 recent videos. If the oldest of those is still
-    inside the window, newer-than-15 uploads may exist and we must also list
-    via extract_flat. If the oldest is outside the window, RSS already covers
-    every in-window upload and we can skip the heavier playlist crawl.
+    RSS provides the more precise publication time but no duration. Flat yt-dlp
+    entries supply duration and other metadata, so matching records combine both
+    sources while RSS-only and flat-only records are retained unchanged.
     """
-    if window_start is None:
-        return False
-    dated = [item["published_at"] for item in rss_videos if item.get("published_at")]
-    if not dated:
-        return False
-    return min(dated) < window_start
+    rss_by_id = {item["youtube_video_id"]: item for item in rss_videos}
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for flat in flat_videos:
+        video = dict(flat)
+        video_id = video["youtube_video_id"]
+        seen_ids.add(video_id)
+        rss = rss_by_id.get(video_id)
+        if rss:
+            if rss.get("published_at") is not None:
+                video["published_at"] = rss["published_at"]
+            video["title"] = rss.get("title") or video.get("title") or "Untitled"
+            video["channel_name"] = (
+                video.get("channel_name") or rss.get("channel_name") or ""
+            )
+        merged.append(video)
+
+    merged.extend(dict(rss) for rss in rss_videos if rss["youtube_video_id"] not in seen_ids)
+    return merged
 
 
 def list_channel_videos(
     url: str,
     max_items: int | None = None,
     start_item: int | None = None,
-) -> ChannelListResult:
+) -> list[dict[str, Any]]:
     """List videos on a channel via yt-dlp flat-playlist extraction."""
     url = _normalize_channel_url(url)
 
@@ -270,7 +313,6 @@ def list_channel_videos(
 
     results: list[dict[str, Any]] = []
     channel_name = ""
-    resolved_channel_id: str | None = None
 
     logger.info(
         "Fetching video list for channel: %s (start_item=%s, max_items=%s)",
@@ -285,10 +327,9 @@ def list_channel_videos(
             info = with_backoff(lambda: ydl.extract_info(url, download=False))
             if info is None:
                 logger.error("yt-dlp returned no info for channel URL: %s", url)
-                return ChannelListResult(results, None, channel_name)
+                return results
 
             channel_name = info.get("channel") or info.get("uploader") or ""
-            resolved_channel_id = info.get("channel_id")
             raw_entries = info.get("entries") or []
 
             entries: list[dict[str, Any]] = []
@@ -310,16 +351,25 @@ def list_channel_videos(
                 published_at = _parse_upload_date(upload_date)
 
                 duration = entry.get("duration")
-                if duration is None:
-                    duration = entry.get("duration_string")
-
-                duration_seconds: int | None = None
-                if isinstance(duration, (int, float)):
-                    duration_seconds = int(duration)
+                duration_seconds = int(duration) if isinstance(duration, (int, float)) else None
+                if duration_seconds is None and entry.get("duration_string"):
+                    parsed_duration = yt_dlp.utils.parse_duration(entry["duration_string"])
+                    duration_seconds = (
+                        int(parsed_duration) if parsed_duration is not None else None
+                    )
 
                 results.append(
                     _video_record(
-                        video_id, title, published_at, duration_seconds, channel_name
+                        video_id,
+                        title,
+                        published_at,
+                        duration_seconds,
+                        channel_name,
+                        live_status=entry.get("live_status"),
+                        scheduled_start_at=_parse_release_datetime(
+                            entry.get("release_timestamp"), entry.get("release_date")
+                        ),
+                        webpage_url=entry.get("webpage_url") or entry.get("original_url"),
                     )
                 )
     except Exception as exc:
@@ -337,6 +387,38 @@ def list_channel_videos(
         sum(1 for item in results if item["published_at"] is None),
     )
     return results
+
+
+def fetch_video_live_metadata(youtube_video_id: str) -> dict[str, Any]:
+    """Fetch full metadata for one video after an upcoming-event response."""
+    url = f"https://www.youtube.com/watch?v={youtube_video_id}"
+    ydl_opts: dict[str, Any] = {
+        **_base_ydl_opts(),
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            def extract() -> dict[str, Any]:
+                pace_youtube_request(f"live_metadata:{youtube_video_id}")
+                return ydl.extract_info(url, download=False, process=False) or {}
+
+            info = with_backoff(extract)
+    except Exception as exc:
+        _raise_if_bot_check(exc)
+        if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
+            raise RateLimitError(str(exc)) from exc
+        raise
+
+    return {
+        "title": info.get("title") or "",
+        "live_status": _normalize_live_status(info.get("live_status")),
+        "scheduled_start_at": _parse_release_datetime(
+            info.get("release_timestamp"), info.get("release_date")
+        ),
+    }
 
 
 def download_audio(youtube_video_id: str) -> Path:

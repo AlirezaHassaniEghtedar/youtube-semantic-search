@@ -23,17 +23,17 @@ from app.models import (
 from app.services.captions import fetch_captions
 from app.services.downloader import (
     NARROW_DATE_WINDOWS,
+    classify_video_type,
     cleanup_audio_file,
     download_audio,
     fetch_channel_rss_videos,
+    fetch_video_live_metadata,
     list_channel_videos,
-    merge_rss_dates,
-    rss_covers_window,
+    merge_rss_and_flat,
 )
 from app.services.embedder import EmbedderService, serialize_embedding
-from app.services.rate_limiter import GlobalRateLimiter
+from app.services.live_detection import is_upcoming_event_error
 from app.services.retry import RateLimitError
-from app.services.rss import fetch_recent_videos_via_rss
 from app.services.transcriber import transcribe
 from app.services.text_processor import chunk
 
@@ -44,19 +44,13 @@ _executor = ThreadPoolExecutor(
 )
 
 WINDOW_MAX_ITEMS: dict[str, int | None] = {
+    "24h": 50,
     "7d": 150,
     "30d": 400,
     "custom": 1000,
+    "custom_hours": 300,
     "all": None,
 }
-
-SHORT_WINDOWS = {"24h", "custom_hours"}
-_rate_limiter = GlobalRateLimiter(settings.YT_GLOBAL_MIN_INTERVAL_SECONDS)
-
-
-def _is_short_window(time_window: str) -> bool:
-    """RSS has accurate timestamps, making it suitable for sub-day windows."""
-    return time_window in SHORT_WINDOWS
 
 # The event cannot pre-empt a yt-dlp or Whisper call already running in a
 # worker thread. It does prevent every subsequent stage from starting.
@@ -223,13 +217,10 @@ def resolve_fetch_range(
     return already + 1, requested_max_items, False
 
 
-# NOTE: yt-dlp extract_flat almost never returns upload_date, so published_at
-# is usually missing on playlist entries. Narrow windows (24h/7d/30d/
-# custom_hours) prefer YouTube's channel RSS feed, which includes a real
-# pubDate for the latest ~15 videos. When RSS covers the window, we filter
-# by that date. When RSS is incomplete or fails, we fall back to the
-# newest-first playlist cap (WINDOW_MAX_ITEMS) and only apply a date check
-# to rows that actually have published_at. "all" never date-filters.
+# NOTE: yt-dlp extract_flat almost never returns upload_date, so narrow windows
+# merge its duration-bearing entries with the latest ~15 RSS entries, whose
+# pubDates are more precise. If RSS is unavailable we fall back to the
+# newest-first playlist cap (WINDOW_MAX_ITEMS). "all" never date-filters.
 def _video_in_window(
     published_at: datetime | None,
     window_start: datetime | None,
@@ -305,15 +296,13 @@ async def run_channel_pipeline(
                     "Channel %s: requested range already covered; skipping YouTube fetch",
                     channel_id,
                 )
-                videos_data: list[dict] = rss_videos or []
-                if rss_videos is None:
-                    sync_job.status = SyncJobStatus.SKIPPED_ALREADY_COVERED
-                    sync_job.finished_at = utcnow()
+                videos_data: list[dict] = []
+                sync_job.status = SyncJobStatus.SKIPPED_ALREADY_COVERED
+                sync_job.finished_at = utcnow()
             else:
                 try:
                     rss_videos = None
                     videos_data = []
-                    rss_complete = False
                     if time_window in NARROW_DATE_WINDOWS:
                         rss_videos = await loop.run_in_executor(
                             _executor, fetch_channel_rss_videos, channel.url
@@ -330,50 +319,43 @@ async def run_channel_pipeline(
                                 "flat playlist (date filter mode=playlist_cap_approximation)",
                                 channel.url,
                             )
-                        elif rss_covers_window(rss_videos, window_start):
-                            rss_complete = True
-                            date_filter_mode = "rss"
-                            videos_data = rss_videos
-                            logger.info(
-                                "Date filter mode=rss for %s (%d RSS entries cover the window)",
-                                channel.url,
-                                len(rss_videos),
-                            )
                         else:
                             logger.info(
-                                "RSS oldest pubDate is still inside the window for %s; "
-                                "merging RSS dates into the flat playlist",
+                                "RSS supplied %d entries for %s; merging its precise "
+                                "pubDates with the flat playlist's durations",
+                                len(rss_videos),
                                 channel.url,
                             )
 
-                    if not rss_complete:
-                        videos_data = await loop.run_in_executor(
-                            _executor,
-                            list_channel_videos,
+                    # Always fetch the flat listing. RSS has publication dates
+                    # but intentionally has no duration field, so RSS-only
+                    # results leave the UI with blank durations.
+                    videos_data = await loop.run_in_executor(
+                        _executor,
+                        list_channel_videos,
+                        channel.url,
+                        playlistend,
+                        playliststart,
+                    )
+                    if rss_videos:
+                        videos_data = merge_rss_and_flat(videos_data, rss_videos)
+                        date_filter_mode = "rss+flat"
+                        logger.info(
+                            "Merged %d RSS and flat entries; date filter mode=rss+flat for %s",
+                            len(videos_data),
                             channel.url,
-                            playlistend,
-                            playliststart,
                         )
-                        if rss_videos:
-                            merged = merge_rss_dates(videos_data, rss_videos)
-                            date_filter_mode = "rss+flat"
-                            logger.info(
-                                "Merged RSS pubDate onto %d flat entries; "
-                                "date filter mode=rss+flat for %s",
-                                merged,
-                                channel.url,
-                            )
-                        else:
-                            date_filter_mode = (
-                                "none"
-                                if time_window == "all"
-                                else "playlist_cap_approximation"
-                            )
-                            logger.info(
-                                "Date filter mode=%s for %s",
-                                date_filter_mode,
-                                channel.url,
-                            )
+                    else:
+                        date_filter_mode = (
+                            "none"
+                            if time_window == "all"
+                            else "playlist_cap_approximation"
+                        )
+                        logger.info(
+                            "Date filter mode=%s for %s",
+                            date_filter_mode,
+                            channel.url,
+                        )
                 except RateLimitError as exc:
                     message = "YouTube rate-limited this IP — wait before retrying"
                     logger.error("%s: %s", message, exc)
@@ -413,11 +395,17 @@ async def run_channel_pipeline(
                 channel.name = videos_data[0].get("channel_name") or channel.name
 
             dated = sum(1 for video in videos_data if video.get("published_at") is not None)
+            with_duration = sum(
+                1 for video in videos_data if video.get("duration_seconds") is not None
+            )
             logger.info(
-                "Channel %s listing complete: mode=%s, %d/%d videos have published_at",
+                "Channel %s listing complete: mode=%s, %d/%d videos have published_at, "
+                "%d/%d have duration_seconds",
                 channel.url,
                 date_filter_mode,
                 dated,
+                len(videos_data),
+                with_duration,
                 len(videos_data),
             )
             if date_filter_mode != "rss" and time_window != "all" and dated < len(videos_data):
@@ -440,14 +428,40 @@ async def run_channel_pipeline(
                 youtube_video_id = video_data["youtube_video_id"]
                 if youtube_video_id in existing:
                     video = existing[youtube_video_id]
+                    video.title = video_data.get("title") or video.title
+                    video.published_at = video_data.get("published_at") or video.published_at
+                    video.duration_seconds = (
+                        video_data.get("duration_seconds") or video.duration_seconds
+                    )
+                    incoming_live_status = video_data.get("live_status")
+                    if incoming_live_status and incoming_live_status != "none":
+                        video.live_status = incoming_live_status
+                    video.scheduled_start_at = (
+                        video_data.get("scheduled_start_at") or video.scheduled_start_at
+                    )
+                    type_entry = {
+                        **video_data,
+                        "duration_seconds": video.duration_seconds,
+                        "live_status": video.live_status or incoming_live_status,
+                    }
+                    video.video_type = classify_video_type(type_entry)
                     if video.status == VideoStatus.DONE:
                         continue
-                    video.title = video_data.get("title") or video.title
-                    video.published_at = video_data.get("published_at")
-                    video.duration_seconds = video_data.get("duration_seconds")
                     if video.status == VideoStatus.ERROR:
                         video.status = VideoStatus.PENDING
                         video.error_message = None
+                    elif (
+                        video.status == VideoStatus.UPCOMING_EVENT
+                        and video.scheduled_start_at
+                        and video.scheduled_start_at <= utcnow()
+                    ):
+                        video.status = VideoStatus.PENDING
+                        video.error_message = None
+                        if incoming_live_status in (None, "none"):
+                            video.live_status = "none"
+                            video.video_type = classify_video_type(
+                                {**video_data, "live_status": "none"}
+                            )
                     continue
 
                 session.add(
@@ -457,6 +471,9 @@ async def run_channel_pipeline(
                         title=video_data.get("title") or "Untitled",
                         published_at=video_data.get("published_at"),
                         duration_seconds=video_data.get("duration_seconds"),
+                        live_status=video_data.get("live_status") or "none",
+                        scheduled_start_at=video_data.get("scheduled_start_at"),
+                        video_type=classify_video_type(video_data),
                         status=VideoStatus.PENDING,
                     )
                 )
@@ -493,7 +510,13 @@ async def run_channel_pipeline(
                     select(Video.id)
                     .where(
                         Video.channel_id == channel_id,
-                        Video.status.notin_([VideoStatus.DONE, VideoStatus.ERROR]),
+                        Video.status.notin_(
+                            [
+                                VideoStatus.DONE,
+                                VideoStatus.ERROR,
+                                VideoStatus.UPCOMING_EVENT,
+                            ]
+                        ),
                     )
                     .limit(1)
                 )
@@ -516,6 +539,45 @@ async def _restore_pending(video_id: UUID) -> None:
             await session.commit()
 
 
+async def _mark_upcoming_event(
+    video_id: UUID,
+    youtube_video_id: str,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Persist an expected scheduled-event state without affecting rate limits."""
+    metadata: dict = {}
+    try:
+        metadata = await loop.run_in_executor(
+            _executor, fetch_video_live_metadata, youtube_video_id
+        )
+    except Exception as exc:
+        # The triggering response is already enough to label the video; a
+        # metadata lookup failure should not turn an upcoming event into ERROR.
+        logger.info(
+            "Could not enrich upcoming event %s; keeping fallback metadata: %s",
+            youtube_video_id,
+            exc,
+        )
+
+    scheduled_start = metadata.get("scheduled_start_at")
+    async with async_session_factory() as session:
+        video = await session.get(Video, video_id)
+        if video is None:
+            return
+        video.title = metadata.get("title") or video.title
+        video.status = VideoStatus.UPCOMING_EVENT
+        video.live_status = "upcoming"
+        video.scheduled_start_at = scheduled_start or video.scheduled_start_at
+        video.video_type = "upcoming event"
+        video.error_message = None
+        logger.info(
+            "Video %s is an upcoming live event scheduled for %s; skipping processing",
+            youtube_video_id,
+            video.scheduled_start_at,
+        )
+        await session.commit()
+
+
 async def _process_pending_videos(
     channel_id: UUID,
     whisper_model,
@@ -523,7 +585,7 @@ async def _process_pending_videos(
     stop_event: asyncio.Event,
 ) -> ProcessingState:
     loop = asyncio.get_running_loop()
-    state = ProcessingState()
+    state = ProcessingState(channel_id=channel_id)
     async with async_session_factory() as session:
         result = await session.execute(
             select(Video).where(
@@ -623,6 +685,11 @@ async def _process_single_video(
                 )
                 state.trip_captions(str(exc))
                 segments_data = None
+            except Exception as exc:
+                if is_upcoming_event_error(exc):
+                    await _mark_upcoming_event(video_id, youtube_video_id, loop)
+                    return
+                raise
 
         if segments_data is None:
             if await should_stop():
@@ -648,29 +715,19 @@ async def _process_single_video(
                 async with download_sem:
                     if await should_stop():
                         return
-                    await _rate_limiter.wait()
                     audio_path = await loop.run_in_executor(
                         _executor, download_audio, youtube_video_id
                     )
-            except BotCheckError as exc:
-                _rate_limiter.increase_interval()
-                logger.error(
-                    "YouTube bot-check triggered on video %s. Increased global request "
-                    "spacing to %.1fs; pausing this channel for %d minutes. "
-                    "Set YT_COOKIES_FILE in .env if this keeps happening. Error: %s",
-                    youtube_video_id,
-                    _rate_limiter.min_interval,
-                    settings.BOT_CHECK_COOLDOWN_MINUTES,
-                    exc,
-                )
-                state.trip(str(exc))
-                await _restore_pending(video_id)
-                return
             except RateLimitError as exc:
                 logger.error("YouTube rate limit on video %s: %s", youtube_video_id, exc)
                 state.trip(str(exc))
                 await _restore_pending(video_id)
                 return
+            except Exception as exc:
+                if is_upcoming_event_error(exc):
+                    await _mark_upcoming_event(video_id, youtube_video_id, loop)
+                    return
+                raise
 
             if await should_stop():
                 return

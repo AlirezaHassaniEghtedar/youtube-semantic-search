@@ -49,6 +49,7 @@ class VideoStatus(str, enum.Enum):
     TRANSCRIBING = "transcribing"
     EMBEDDING = "embedding"
     DONE = "done"
+    UPCOMING_EVENT = "upcoming_event"
     ERROR = "error"
 
 
@@ -124,6 +125,12 @@ class Video(Base):
         DateTime(timezone=True), nullable=True
     )
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Normalized values: none, upcoming, is_live, or was_live.
+    live_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scheduled_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    video_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[VideoStatus] = mapped_column(
         Enum(VideoStatus, native_enum=False),
         default=VideoStatus.PENDING,

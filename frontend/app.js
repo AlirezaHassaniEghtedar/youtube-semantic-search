@@ -42,6 +42,37 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+function formatScheduledDateTime(iso) {
+  if (!iso) return "Schedule to be announced";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "Schedule to be announced";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+function buildGoogleCalendarLink(title, scheduledStartIso, youtubeUrl) {
+  const start = new Date(scheduledStartIso);
+  if (Number.isNaN(start.getTime())) return null;
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const toCalendarUtc = (date) => {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
+  };
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: title,
+    dates: `${toCalendarUtc(start)}/${toCalendarUtc(end)}`,
+    details: youtubeUrl,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 function showToast(message, type = "success") {
   const container = document.getElementById("toast-container");
   const toast = document.createElement("div");
@@ -277,13 +308,19 @@ function renderVideos(videos) {
     .map(
       (v) => `
     <tr>
-      <td class="video-title" title="${escapeHtml(v.title)}" dir="${detectDir(v.title)}">${escapeHtml(v.title)}</td>
+      <td class="video-title" title="${escapeHtml(v.title)}" dir="${detectDir(v.title)}">${escapeHtml(v.title)}${v.video_type ? ` <span class="video-type-badge">${escapeHtml(v.video_type)}</span>` : ""}</td>
       <td>${formatDate(v.published_at)}</td>
       <td>${formatDuration(v.duration_seconds)}</td>
       <td><span class="badge badge--${v.status}">${v.status}</span></td>
       <td>
         ${
-          v.status === "done"
+          v.video_type === "upcoming event"
+            ? `<div class="upcoming-event__actions">
+                <span class="upcoming-event__schedule">${formatScheduledDateTime(v.scheduled_start_at)}</span>
+                <a href="https://www.youtube.com/watch?v=${v.youtube_video_id}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">Watch on YouTube</a>
+                ${buildGoogleCalendarLink(v.title, v.scheduled_start_at, `https://www.youtube.com/watch?v=${v.youtube_video_id}`) ? `<a href="${buildGoogleCalendarLink(v.title, v.scheduled_start_at, `https://www.youtube.com/watch?v=${v.youtube_video_id}`)}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">Add to Google Calendar</a>` : ""}
+              </div>`
+            : v.status === "done"
             ? `<button type="button" class="btn btn--ghost btn--sm view-transcript-btn" data-id="${v.id}" data-title="${escapeHtml(v.title)}">View Transcript</button>`
             : v.error_message
               ? `<span title="${escapeHtml(v.error_message)}" style="color:var(--color-error);font-size:0.8rem">Error</span>`
@@ -312,6 +349,21 @@ async function openTranscript(videoId, title) {
   await loadTranscript(true);
 }
 
+async function openTranscriptAtSegment(videoId, videoTitle, segmentId, startTime) {
+  await openTranscript(videoId, videoTitle);
+  const line = Array.from(document.querySelectorAll(".transcript-line")).find(
+    (element) => element.dataset.segmentId === segmentId
+  );
+  if (!line) {
+    console.warn("Matched transcript segment was not rendered", { segmentId, startTime });
+    showToast("Matched segment is not available in this transcript", "error");
+    return;
+  }
+  line.scrollIntoView({ behavior: "smooth", block: "center" });
+  line.classList.add("transcript-line--highlight");
+  setTimeout(() => line.classList.remove("transcript-line--highlight"), 2500);
+}
+
 async function loadTranscript(withTimestamps) {
   const body = document.getElementById("transcript-body");
   body.innerHTML = '<p class="empty-state">Loading transcript…</p>';
@@ -325,7 +377,7 @@ async function loadTranscript(withTimestamps) {
         .map((seg) => {
           const dir = detectDir(seg.text);
           return `
-          <div class="transcript-line">
+          <div class="transcript-line" data-segment-id="${seg.segment_id}">
             <a href="${seg.youtube_link}" target="_blank" rel="noopener" class="transcript-ts" title="Open on YouTube">[${formatTimestamp(seg.start_time)}]</a>
             <span class="transcript-text" dir="${dir}">${escapeHtml(seg.text)}</span>
           </div>`;
@@ -434,6 +486,7 @@ async function performSearch(e) {
           </div>
           <p class="result-card__snippet" dir="${dir}">${escapeHtml(r.text)}</p>
           <div class="result-card__footer">
+            <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
             <span>⏱ ${formatTimestamp(r.start_time)}</span>
             <a href="${r.youtube_link}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">▶ Watch</a>
           </div>

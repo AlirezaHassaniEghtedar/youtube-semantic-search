@@ -36,6 +36,11 @@ async def ensure_columns() -> None:
             ("synced_all", "BOOLEAN DEFAULT 0"),
             ("youtube_channel_id", "TEXT"),
         ],
+        "videos": [
+            ("live_status", "TEXT"),
+            ("scheduled_start_at", "DATETIME"),
+            ("video_type", "TEXT"),
+        ],
     }
     async with engine.begin() as conn:
         for table, columns in column_specs.items():

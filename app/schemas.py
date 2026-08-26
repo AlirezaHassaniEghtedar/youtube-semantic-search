@@ -52,6 +52,9 @@ class VideoSummary(BaseModel):
     title: str
     published_at: datetime | None
     duration_seconds: int | None
+    live_status: str | None
+    scheduled_start_at: datetime | None
+    video_type: str | None
     status: str
     error_message: str | None
 
@@ -64,6 +67,7 @@ class VideoDetail(VideoSummary):
 
 
 class TranscriptSegment(BaseModel):
+    segment_id: UUID
     start_time: float
     end_time: float
     text: str

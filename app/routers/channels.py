@@ -21,7 +21,11 @@ TERMINAL_CHANNEL_STATUSES = {
     ChannelStatus.ERROR,
     ChannelStatus.STOPPED,
 }
-TERMINAL_VIDEO_STATUSES = {VideoStatus.DONE, VideoStatus.ERROR}
+TERMINAL_VIDEO_STATUSES = {
+    VideoStatus.DONE,
+    VideoStatus.ERROR,
+    VideoStatus.UPCOMING_EVENT,
+}
 
 
 async def _channel_counts(session: AsyncSession, channel_id: UUID) -> dict[str, int]:
@@ -214,6 +218,11 @@ async def list_channel_videos(channel_id: UUID, db: AsyncSession = Depends(get_d
             "title": v.title,
             "published_at": v.published_at.isoformat() if v.published_at else None,
             "duration_seconds": v.duration_seconds,
+            "live_status": v.live_status,
+            "scheduled_start_at": (
+                v.scheduled_start_at.isoformat() if v.scheduled_start_at else None
+            ),
+            "video_type": v.video_type,
             "status": v.status.value,
             "error_message": v.error_message,
         }

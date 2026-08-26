@@ -34,6 +34,9 @@ async def get_video(video_id: UUID, db: AsyncSession = Depends(get_db)):
         title=video.title,
         published_at=video.published_at,
         duration_seconds=video.duration_seconds,
+        live_status=video.live_status,
+        scheduled_start_at=video.scheduled_start_at,
+        video_type=video.video_type,
         status=video.status.value,
         error_message=video.error_message,
         channel_name=channel_name,
@@ -61,6 +64,7 @@ async def get_transcript(
     if with_timestamps:
         return [
             TranscriptSegment(
+                segment_id=s.id,
                 start_time=s.start_time,
                 end_time=s.end_time,
                 text=s.text,

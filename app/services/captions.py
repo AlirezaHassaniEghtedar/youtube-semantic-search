@@ -8,6 +8,7 @@ from youtube_transcript_api import (
     YouTubeTranscriptApi,
 )
 
+from app.services.live_detection import is_upcoming_event_error
 from app.services.retry import RateLimitError, looks_like_rate_limit, with_backoff
 from app.services.youtube_pace import pace_youtube_request
 
@@ -57,6 +58,10 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
         logger.info("Captions disabled/unavailable for %s", youtube_video_id)
         return None
     except Exception as exc:
+        if is_upcoming_event_error(exc):
+            # Let the pipeline label scheduled events instead of treating the
+            # unplayable-video response as a transient YouTube block.
+            raise
         if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
             raise RateLimitError(str(exc)) from exc
         logger.exception(
