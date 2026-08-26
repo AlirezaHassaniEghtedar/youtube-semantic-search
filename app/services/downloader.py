@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,13 +220,32 @@ def fetch_channel_rss_videos(url: str) -> list[dict[str, Any]] | None:
         return None
 
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    pace_youtube_request("channel_rss")
-    try:
-        response = httpx.get(feed_url, timeout=20.0, follow_redirects=True)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-    except Exception:
-        logger.exception("RSS fetch failed for channel_id=%s url=%s", channel_id, url)
+    
+    # Retry RSS fetch with simple backoff (2 attempts, 1-2 second delay)
+    root = None
+    last_error = None
+    for attempt in range(1, 3):  # 2 attempts
+        pace_youtube_request("channel_rss")
+        try:
+            response = httpx.get(feed_url, timeout=20.0, follow_redirects=True)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            break  # Success, exit retry loop
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:  # Not the last attempt
+                logger.debug(
+                    "RSS fetch attempt %d failed for channel_id=%s; retrying in 1-2 seconds (%s)",
+                    attempt, channel_id, type(exc).__name__
+                )
+                time.sleep(1.5)
+            # Otherwise continue to next attempt or fall through to error logging
+    
+    if root is None:
+        logger.exception(
+            "RSS fetch failed after retries for channel_id=%s (last error: %s)",
+            channel_id, last_error
+        )
         return None
 
     if not channel_name:
