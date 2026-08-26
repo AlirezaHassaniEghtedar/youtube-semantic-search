@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     DOWNLOAD_DIR: str = "./downloads"
     MAX_SEARCH_RESULTS: int = 20
     DEFAULT_TIME_WINDOW: str = "7d"
+    YOUTUBE_DATA_API_KEY: str | None = None
 
     @property
     def download_path(self) -> Path:

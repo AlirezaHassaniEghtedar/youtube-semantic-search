@@ -166,6 +166,54 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `DOWNLOAD_DIR` | `./downloads` | Temporary audio storage (deleted after transcription) |
 | `MAX_SEARCH_RESULTS` | `20` | Default search result limit |
 | `DEFAULT_TIME_WINDOW` | `7d` | Default time window |
+| `YOUTUBE_DATA_API_KEY` | empty | Optional YouTube Data API v3 key for full metadata coverage |
+
+### YouTube Data API Setup (Optional)
+
+The app uses the YouTube Data API v3 when configured to fetch accurate publication dates and durations for **every video** in a channel. Without the API, metadata is limited to the ~15 most recent videos (via RSS) and duration estimates from yt-dlp's playlist scraping.
+
+**Benefits of the API key:**
+- Accurate `published_at` for all videos (not just recent ones)
+- Accurate `duration_seconds` for all videos
+- Direct `scheduledStartTime` for upcoming/scheduled streams (improves PART 2 enrichment)
+- Full metadata coverage regardless of channel size or sync window
+
+**Setup:**
+
+1. **Create a Google Cloud project:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com)
+   - Create a new project (or use an existing one)
+
+2. **Enable YouTube Data API v3:**
+   - Search for "YouTube Data API v3" in the API library
+   - Click **Enable**
+
+3. **Create an API key credential:**
+   - Go to **Credentials** → **Create Credentials** → **API Key**
+   - Copy the generated key
+
+4. **Add to `.env`:**
+   ```
+   YOUTUBE_DATA_API_KEY=YOUR_API_KEY_HERE
+   ```
+
+5. **Verify it works:**
+   - Add a new channel with a large time window (e.g., "All videos")
+   - Check logs for `date_filter_mode=youtube_api` to confirm the API is being used
+   - All videos should have both `published_at` and `duration_seconds` populated
+
+**Quota and costs:**
+- Free tier: **10,000 quota units per calendar day**
+- Each `channels.list` call (resolve uploads playlist): **1 unit**
+- Each `playlistItems.list` call (fetch videos, max 50 per call): **1 unit**
+- Each `videos.list` call (durations/live status, max 50 per call): **1 unit**
+- A full channel sync with API typically costs **2–10 units** depending on size
+- No billing is required for the free tier; usage is capped at 10,000 units/day
+
+**Fallback behavior:**
+- If the API key is not set, the app uses RSS + yt-dlp (existing behavior)
+- If the API key is set but quota is exceeded, the app falls back to RSS + yt-dlp automatically
+- The app does not retry API calls once quota is exhausted in the same session
 
 ---
 

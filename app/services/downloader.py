@@ -12,6 +12,10 @@ from dateutil import parser as date_parser
 from app.config import settings
 from app.services.retry import RateLimitError, looks_like_rate_limit, with_backoff
 from app.services.youtube_pace import pace_youtube_request
+from app.services.live_detection import (
+    is_upcoming_event_error,
+    parse_scheduled_start_from_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +394,13 @@ def list_channel_videos(
 
 
 def fetch_video_live_metadata(youtube_video_id: str) -> dict[str, Any]:
-    """Fetch full metadata for one video after an upcoming-event response."""
+    """Fetch full metadata for one video after an upcoming-event response.
+    
+    For upcoming/unplayable videos, tries:
+    1. Extract metadata with ignore_no_formats_error to get release_timestamp
+    2. If that fails, parse the error message for relative time (e.g. "will begin in 12 hours")
+    3. Fallback to None if both fail
+    """
     url = f"https://www.youtube.com/watch?v={youtube_video_id}"
     ydl_opts: dict[str, Any] = {
         **_base_ydl_opts(),
@@ -398,7 +408,12 @@ def fetch_video_live_metadata(youtube_video_id: str) -> dict[str, Any]:
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
+        "ignore_no_formats_error": True,
     }
+    
+    scheduled_start_at = None
+    info: dict[str, Any] | None = None
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             def extract() -> dict[str, Any]:
@@ -406,18 +421,39 @@ def fetch_video_live_metadata(youtube_video_id: str) -> dict[str, Any]:
                 return ydl.extract_info(url, download=False, process=False) or {}
 
             info = with_backoff(extract)
+            
+            # Try to get scheduled start from structured metadata
+            if info:
+                scheduled_start_at = _parse_release_datetime(
+                    info.get("release_timestamp"), info.get("release_date")
+                )
+                if scheduled_start_at:
+                    logger.info(
+                        "Extracted precise scheduled_start_at from metadata for %s: %s",
+                        youtube_video_id,
+                        scheduled_start_at.isoformat(),
+                    )
     except Exception as exc:
         _raise_if_bot_check(exc)
         if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
             raise RateLimitError(str(exc)) from exc
-        raise
+        
+        # If upcoming event error, try fallback parsing from error message
+        if is_upcoming_event_error(exc):
+            scheduled_start_at = parse_scheduled_start_from_error(exc)
+            if not scheduled_start_at:
+                logger.warning(
+                    "Could not parse scheduled time from error for %s: %s",
+                    youtube_video_id,
+                    exc,
+                )
+        else:
+            raise
 
     return {
-        "title": info.get("title") or "",
-        "live_status": _normalize_live_status(info.get("live_status")),
-        "scheduled_start_at": _parse_release_datetime(
-            info.get("release_timestamp"), info.get("release_date")
-        ),
+        "title": (info or {}).get("title") or "",
+        "live_status": _normalize_live_status((info or {}).get("live_status")),
+        "scheduled_start_at": scheduled_start_at,
     }
 
 

@@ -300,7 +300,7 @@ function renderVideos(videos) {
 
   if (!videos.length) {
     tbody.innerHTML =
-      '<tr><td colspan="5" class="empty-state">No videos in this time window.</td></tr>';
+      '<tr><td colspan="6" class="empty-state">No videos in this time window.</td></tr>';
     return;
   }
 
@@ -308,7 +308,10 @@ function renderVideos(videos) {
     .map(
       (v) => `
     <tr>
-      <td class="video-title" title="${escapeHtml(v.title)}" dir="${detectDir(v.title)}">${escapeHtml(v.title)}${v.video_type ? ` <span class="video-type-badge">${escapeHtml(v.video_type)}</span>` : ""}</td>
+      <td class="video-title" title="${escapeHtml(v.title)}" dir="${detectDir(v.title)}">${escapeHtml(v.title)}</td>
+      <td>
+        ${v.video_type ? `<span class="badge badge--video-type">${escapeHtml(v.video_type)}</span>` : "—"}
+      </td>
       <td>${formatDate(v.published_at)}</td>
       <td>${formatDuration(v.duration_seconds)}</td>
       <td><span class="badge badge--${v.status}">${v.status}</span></td>

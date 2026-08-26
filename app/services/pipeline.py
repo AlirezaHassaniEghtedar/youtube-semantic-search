@@ -4,6 +4,7 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -36,6 +37,13 @@ from app.services.live_detection import is_upcoming_event_error
 from app.services.retry import RateLimitError
 from app.services.transcriber import transcribe
 from app.services.text_processor import chunk
+from app.services.youtube_api import (
+    QuotaExhaustedError,
+    YouTubeAPIError,
+    fetch_channel_videos_via_api,
+    fetch_video_durations_via_api,
+    fetch_live_status_via_api,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +59,9 @@ WINDOW_MAX_ITEMS: dict[str, int | None] = {
     "custom_hours": 300,
     "all": None,
 }
+
+# Track YouTube API quota exhaustion per process lifetime to avoid repeated retries
+_api_quota_exhausted = False
 
 # The event cannot pre-empt a yt-dlp or Whisper call already running in a
 # worker thread. It does prevent every subsequent stage from starting.
@@ -239,6 +250,111 @@ def _video_in_window(
     return True
 
 
+def _fetch_videos_via_youtube_api(
+    channel_youtube_id: str,
+    api_key: str,
+    window_start: datetime | None,
+    max_items: int | None,
+) -> list[dict[str, Any]] | None:
+    """Try to fetch channel videos via YouTube Data API v3.
+    
+    Returns list of video dicts compatible with the pipeline format, or None on error.
+    Returns empty list if quota is exhausted (sets global flag).
+    """
+    global _api_quota_exhausted
+    
+    if _api_quota_exhausted:
+        logger.info("YouTube API quota already exhausted this session; skipping API call")
+        return None
+    
+    try:
+        # Fetch list of videos
+        api_videos = fetch_channel_videos_via_api(
+            channel_youtube_id,
+            api_key,
+            published_after=window_start,
+            max_items=max_items,
+        )
+        
+        if not api_videos:
+            logger.warning("YouTube API returned no videos for channel %s", channel_youtube_id)
+            return []
+        
+        # Extract video IDs and fetch durations
+        video_ids = [v["videoId"] for v in api_videos]
+        durations = fetch_video_durations_via_api(video_ids, api_key)
+        
+        # Fetch live status (for upcoming/was_live detection)
+        live_statuses = fetch_live_status_via_api(video_ids, api_key)
+        
+        # Convert to internal format
+        results = []
+        for api_video in api_videos:
+            video_id = api_video["videoId"]
+            published_at_str = api_video.get("publishedAt")
+            
+            try:
+                published_at = None
+                if published_at_str:
+                    published_at = datetime.fromisoformat(
+                        published_at_str.replace("Z", "+00:00")
+                    )
+            except (ValueError, TypeError):
+                published_at = None
+            
+            duration = durations.get(video_id)
+            
+            # Extract live status info
+            live_info = live_statuses.get(video_id, {})
+            live_streaming_details = live_info.get("liveStreamingDetails", {})
+            live_broadcast_content = live_info.get("liveBroadcastContent", "none")
+            
+            # Normalize live status
+            live_status = "none"
+            if live_broadcast_content == "upcoming":
+                live_status = "upcoming"
+            elif live_broadcast_content == "live":
+                live_status = "is_live"
+            
+            scheduled_start_at = None
+            if "scheduledStartTime" in live_streaming_details:
+                try:
+                    scheduled_start_at = datetime.fromisoformat(
+                        live_streaming_details["scheduledStartTime"].replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pass
+            
+            results.append({
+                "youtube_video_id": video_id,
+                "title": api_video.get("title", "Untitled"),
+                "published_at": published_at,
+                "duration_seconds": duration,
+                "live_status": live_status,
+                "scheduled_start_at": scheduled_start_at,
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+                "channel_name": "",
+            })
+        
+        logger.info(
+            "Fetched %d videos via YouTube API for channel %s",
+            len(results),
+            channel_youtube_id,
+        )
+        return results
+    
+    except QuotaExhaustedError as exc:
+        logger.warning("YouTube API quota exhausted: %s", exc)
+        _api_quota_exhausted = True
+        return None
+    except YouTubeAPIError as exc:
+        logger.warning("YouTube API error: %s; falling back to RSS+flat", exc)
+        return None
+    except Exception as exc:
+        logger.exception("Unexpected error calling YouTube API: %s", exc)
+        return None
+
+
 async def run_channel_pipeline(
     channel_id: UUID,
     time_window: str,
@@ -303,59 +419,94 @@ async def run_channel_pipeline(
                 try:
                     rss_videos = None
                     videos_data = []
-                    if time_window in NARROW_DATE_WINDOWS:
-                        rss_videos = await loop.run_in_executor(
-                            _executor, fetch_channel_rss_videos, channel.url
+                    date_filter_mode = "none" if time_window == "all" else "playlist_cap_approximation"
+                    
+                    # Try YouTube Data API v3 first if configured
+                    if settings.YOUTUBE_DATA_API_KEY and channel.youtube_channel_id:
+                        logger.info(
+                            "Attempting YouTube Data API v3 for full video listing of channel %s",
+                            channel.url,
                         )
-                        if stop_event.is_set():
-                            channel.status = ChannelStatus.STOPPED
-                            sync_job.status = SyncJobStatus.STOPPED
-                            sync_job.finished_at = utcnow()
-                            await session.commit()
-                            return
-                        if not rss_videos:
-                            logger.warning(
-                                "RSS listing failed or empty for %s; falling back to "
-                                "flat playlist (date filter mode=playlist_cap_approximation)",
+                        api_videos = await loop.run_in_executor(
+                            _executor,
+                            _fetch_videos_via_youtube_api,
+                            channel.youtube_channel_id,
+                            settings.YOUTUBE_DATA_API_KEY,
+                            window_start,
+                            max_items,
+                        )
+                        
+                        if api_videos is not None:
+                            videos_data = api_videos
+                            date_filter_mode = "youtube_api"
+                            logger.info(
+                                "Successfully fetched %d videos via YouTube API for %s",
+                                len(videos_data),
+                                channel.url,
+                            )
+                            # Skip RSS+flat path since API provided complete data
+                            rss_videos = None
+                        elif api_videos is None and _api_quota_exhausted:
+                            logger.info(
+                                "YouTube API quota exhausted; falling back to RSS+flat for %s",
+                                channel.url,
+                            )
+                    
+                    # Fall back to RSS+flat if API not configured, not available, or quota exhausted
+                    if not videos_data and date_filter_mode != "youtube_api":
+                        if time_window in NARROW_DATE_WINDOWS:
+                            rss_videos = await loop.run_in_executor(
+                                _executor, fetch_channel_rss_videos, channel.url
+                            )
+                            if stop_event.is_set():
+                                channel.status = ChannelStatus.STOPPED
+                                sync_job.status = SyncJobStatus.STOPPED
+                                sync_job.finished_at = utcnow()
+                                await session.commit()
+                                return
+                            if not rss_videos:
+                                logger.warning(
+                                    "RSS listing failed or empty for %s; falling back to "
+                                    "flat playlist (date filter mode=playlist_cap_approximation)",
+                                    channel.url,
+                                )
+                            else:
+                                logger.info(
+                                    "RSS supplied %d entries for %s; merging its precise "
+                                    "pubDates with the flat playlist's durations",
+                                    len(rss_videos),
+                                    channel.url,
+                                )
+
+                        # Always fetch the flat listing. RSS has publication dates
+                        # but intentionally has no duration field, so RSS-only
+                        # results leave the UI with blank durations.
+                        videos_data = await loop.run_in_executor(
+                            _executor,
+                            list_channel_videos,
+                            channel.url,
+                            playlistend,
+                            playliststart,
+                        )
+                        if rss_videos:
+                            videos_data = merge_rss_and_flat(videos_data, rss_videos)
+                            date_filter_mode = "rss+flat"
+                            logger.info(
+                                "Merged %d RSS and flat entries; date filter mode=rss+flat for %s",
+                                len(videos_data),
                                 channel.url,
                             )
                         else:
+                            date_filter_mode = (
+                                "none"
+                                if time_window == "all"
+                                else "playlist_cap_approximation"
+                            )
                             logger.info(
-                                "RSS supplied %d entries for %s; merging its precise "
-                                "pubDates with the flat playlist's durations",
-                                len(rss_videos),
+                                "Date filter mode=%s for %s",
+                                date_filter_mode,
                                 channel.url,
                             )
-
-                    # Always fetch the flat listing. RSS has publication dates
-                    # but intentionally has no duration field, so RSS-only
-                    # results leave the UI with blank durations.
-                    videos_data = await loop.run_in_executor(
-                        _executor,
-                        list_channel_videos,
-                        channel.url,
-                        playlistend,
-                        playliststart,
-                    )
-                    if rss_videos:
-                        videos_data = merge_rss_and_flat(videos_data, rss_videos)
-                        date_filter_mode = "rss+flat"
-                        logger.info(
-                            "Merged %d RSS and flat entries; date filter mode=rss+flat for %s",
-                            len(videos_data),
-                            channel.url,
-                        )
-                    else:
-                        date_filter_mode = (
-                            "none"
-                            if time_window == "all"
-                            else "playlist_cap_approximation"
-                        )
-                        logger.info(
-                            "Date filter mode=%s for %s",
-                            date_filter_mode,
-                            channel.url,
-                        )
                 except RateLimitError as exc:
                     message = "YouTube rate-limited this IP — wait before retrying"
                     logger.error("%s: %s", message, exc)
@@ -544,7 +695,13 @@ async def _mark_upcoming_event(
     youtube_video_id: str,
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Persist an expected scheduled-event state without affecting rate limits."""
+    """Persist an expected scheduled-event state without affecting rate limits.
+    
+    Enrichment outcomes:
+    (a) Precise release_timestamp from structured metadata
+    (b) Approximate time parsed from yt-dlp error message
+    (c) Genuinely undetermined (scheduled_start_at remains None, "Date TBA")
+    """
     metadata: dict = {}
     try:
         metadata = await loop.run_in_executor(
@@ -570,11 +727,20 @@ async def _mark_upcoming_event(
         video.scheduled_start_at = scheduled_start or video.scheduled_start_at
         video.video_type = "upcoming event"
         video.error_message = None
-        logger.info(
-            "Video %s is an upcoming live event scheduled for %s; skipping processing",
-            youtube_video_id,
-            video.scheduled_start_at,
-        )
+        
+        if scheduled_start:
+            logger.info(
+                "Video %s is an upcoming live event scheduled for %s (precise or "
+                "approximate); enabling 'Add to Google Calendar' feature",
+                youtube_video_id,
+                video.scheduled_start_at,
+            )
+        else:
+            logger.info(
+                "Video %s is an upcoming live event with unknown start time (Date TBA); "
+                "skipping processing",
+                youtube_video_id,
+            )
         await session.commit()
 
 
