@@ -131,6 +131,10 @@ class Video(Base):
         DateTime(timezone=True), nullable=True
     )
     video_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="youtube", server_default="youtube"
+    )
+    local_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[VideoStatus] = mapped_column(
         Enum(VideoStatus, native_enum=False),
         default=VideoStatus.PENDING,
