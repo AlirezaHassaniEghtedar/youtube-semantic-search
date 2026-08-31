@@ -7,38 +7,14 @@ import yt_dlp
 
 from app.config import settings
 from app.services.retry import RateLimitError, looks_like_rate_limit, with_backoff
+from app.services.ydl_common import BotCheckError, base_ydl_opts, raise_if_bot_check
 
 logger = logging.getLogger(__name__)
 
-
-class BotCheckError(RateLimitError):
-    """A YouTube sign-in / bot-check response from yt-dlp."""
-
-
-_BOT_CHECK_MARKERS = ("sign in to confirm", "not a bot")
-
-
-def _base_ydl_opts() -> dict[str, Any]:
-    """Shared pacing and optional authentication for yt-dlp requests."""
-    browser = (
-        settings.YT_COOKIES_FROM_BROWSER
-        or settings.YT_DLP_COOKIES_FROM_BROWSER
-    )
-    opts: dict[str, Any] = {
-        "sleep_interval_requests": 1,
-        "sleep_interval": 2,
-        "max_sleep_interval": 5,
-    }
-    if browser:
-        opts["cookiesfrombrowser"] = (browser,)
-    elif settings.YT_COOKIES_FILE:
-        opts["cookiefile"] = settings.YT_COOKIES_FILE
-    return opts
-
-
-def _raise_if_bot_check(exc: Exception) -> None:
-    if any(marker in str(exc).lower() for marker in _BOT_CHECK_MARKERS):
-        raise BotCheckError(str(exc)) from exc
+# Backwards-compatible aliases (kept private-style names used elsewhere in
+# this module) so the rest of this file does not need to change.
+_base_ydl_opts = base_ydl_opts
+_raise_if_bot_check = raise_if_bot_check
 
 
 def _parse_upload_date(raw: str | None) -> datetime | None:

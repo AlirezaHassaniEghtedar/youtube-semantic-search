@@ -3,12 +3,11 @@ uvicorn[standard]
 sqlalchemy[asyncio]
 aiosqlite
 numpy
-yt-dlp
+yt-dlp==2026.08.19
 faster-whisper
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
 sentence-transformers
-youtube-transcript-api
 pydantic-settings
 python-dotenv
 pywebview

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_DOWNLOADS: int = 2
     MAX_CONCURRENT_TRANSCRIBE: int = 2
     PREFER_CAPTIONS: bool = True
-    YT_COOKIES_FROM_BROWSER: str | None = None
+    YT_COOKIES_FROM_BROWSER: str  = "firefox"
     YT_COOKIES_FILE: str | None = None
     # Backwards-compatible alias for the earlier documented setting name.
     YT_DLP_COOKIES_FROM_BROWSER: str | None = None

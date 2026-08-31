@@ -157,7 +157,7 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | Maximum simultaneous audio downloads; raising it increases YouTube rate-limit risk |
 | `MAX_CONCURRENT_TRANSCRIBE` | `2` | Maximum simultaneous Whisper transcriptions |
 | `PREFER_CAPTIONS` | `true` | Use existing YouTube captions before downloading audio and transcribing |
-| `YT_COOKIES_FROM_BROWSER` | empty | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
+| `YT_COOKIES_FROM_BROWSER` | firefox | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
 | `YT_COOKIES_FILE` | empty | Optional Netscape-format cookies.txt file, used instead of browser cookies |
 | `DOWNLOAD_JITTER_MIN_SECONDS` / `DOWNLOAD_JITTER_MAX_SECONDS` | `1.0` / `4.0` | Random delay before downloads to avoid request bursts |
 | `BOT_CHECK_COOLDOWN_MINUTES` | `15` | How long a batch backs off after a bot-check response |
@@ -230,3 +230,52 @@ You can bundle the app with PyInstaller for distribution without requiring Pytho
 ## License
 
 This project is provided as-is for personal and educational use.
+
+## YouTube transcript reliability (current)
+
+The application uses a layered transcript pipeline:
+
+1. `youtube-transcript-api` for a fast direct transcript request.
+2. `yt-dlp` for a second independent caption path.
+3. `faster-whisper` only when captions are unavailable or a caption provider requires a PO token.
+
+YouTube requests are globally paced across channels. Bot-check and PO-token errors are **not** blindly retried: repeating those requests immediately can increase the block. HTTP 429 and genuinely transient network errors use bounded exponential backoff.
+
+### Recommended yt-dlp setup
+
+For the PyPI installation, install yt-dlp with its default dependency group:
+
+```powershell
+pip install -U "yt-dlp[default]"
+```
+
+Current yt-dlp requires an external JavaScript runtime for YouTube challenge solving. Deno is the recommended runtime. Verify it with:
+
+```powershell
+deno --version
+yt-dlp --version
+```
+
+If YouTube asks you to sign in to confirm you are not a bot, optionally configure browser cookies for yt-dlp:
+
+```text
+YT_COOKIES_FROM_BROWSER=firefox
+```
+
+or `edge`, `firefox`, `brave`, etc. Alternatively provide a Netscape-format cookies file with `YT_COOKIES_FILE`.
+
+Cookies are optional. Do not rotate accounts to bypass blocks. Use conservative pacing and, for a production workload that is legitimately authorized to access the content, configure an appropriate proxy using `YT_PROXY` / `TRANSCRIPT_HTTPS_PROXY`.
+
+### Important limitation
+
+YouTube currently enforces Proof-of-Origin (PO) tokens for some subtitle requests. A PO-token failure is different from a rate limit and cannot be fixed by retrying the same URL. The application therefore records it as a provider failure and falls back to Whisper where audio access is still possible.
+
+### Diagnostic before a large sync
+
+After installing the requirements, test one video first:
+
+```powershell
+python diagnose_youtube.py nL1kaK_PbY0
+```
+
+The diagnostic reports the installed `yt-dlp` and Deno versions, configured cookies/proxy, and whether a transcript is currently retrievable. This avoids starting a 50/150/400-video job while YouTube access is blocked.
