@@ -228,10 +228,10 @@ def resolve_fetch_range(
     return already + 1, requested_max_items, False
 
 
-# NOTE: yt-dlp extract_flat almost never returns upload_date, so narrow windows
-# merge its duration-bearing entries with the latest ~15 RSS entries, whose
-# pubDates are more precise. If RSS is unavailable we fall back to the
-# newest-first playlist cap (WINDOW_MAX_ITEMS). "all" never date-filters.
+# NOTE: published_at sources, in accuracy order: YouTube Data API (optional
+# key), yt-dlp flat listing with youtubetab.approximate_date, then RSS pubDate
+# overlay for the newest ~15 items. Duration comes from the API or flat listing.
+# "all" never date-filters.
 def _video_in_window(
     published_at: datetime | None,
     window_start: datetime | None,
@@ -248,6 +248,18 @@ def _video_in_window(
     if window_end and published_at > window_end:
         return False
     return True
+
+
+def _initial_video_status(video_data: dict[str, Any]) -> VideoStatus:
+    if video_data.get("live_status") == "upcoming":
+        return VideoStatus.UPCOMING_EVENT
+    scheduled = video_data.get("scheduled_start_at")
+    if scheduled is not None:
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        if scheduled > utcnow():
+            return VideoStatus.UPCOMING_EVENT
+    return VideoStatus.PENDING
 
 
 def _fetch_videos_via_youtube_api(
@@ -348,7 +360,7 @@ def _fetch_videos_via_youtube_api(
         _api_quota_exhausted = True
         return None
     except YouTubeAPIError as exc:
-        logger.warning("YouTube API error: %s; falling back to RSS+flat", exc)
+        logger.warning("YouTube API error: %s; falling back to approximate_date+RSS", exc)
         return None
     except Exception as exc:
         logger.exception("Unexpected error calling YouTube API: %s", exc)
@@ -403,9 +415,7 @@ async def run_channel_pipeline(
                 channel, max_items
             )
             date_filter_mode = (
-                "none"
-                if time_window == "all"
-                else "playlist_cap_approximation"
+                "none" if time_window == "all" else "approximate_date"
             )
             if skip_fetch:
                 logger.info(
@@ -419,7 +429,7 @@ async def run_channel_pipeline(
                 try:
                     rss_videos = None
                     videos_data = []
-                    date_filter_mode = "none" if time_window == "all" else "playlist_cap_approximation"
+                    date_filter_mode = "none" if time_window == "all" else "approximate_date"
                     
                     # Try YouTube Data API v3 first if configured
                     if settings.YOUTUBE_DATA_API_KEY and channel.youtube_channel_id:
@@ -467,7 +477,7 @@ async def run_channel_pipeline(
                             if not rss_videos:
                                 logger.warning(
                                     "RSS listing failed or empty for %s; falling back to "
-                                    "flat playlist (date filter mode=playlist_cap_approximation)",
+                                    "flat playlist (date filter mode=approximate_date)",
                                     channel.url,
                                 )
                             else:
@@ -490,17 +500,16 @@ async def run_channel_pipeline(
                         )
                         if rss_videos:
                             videos_data = merge_rss_and_flat(videos_data, rss_videos)
-                            date_filter_mode = "rss+flat"
+                            date_filter_mode = "approximate_date+rss"
                             logger.info(
-                                "Merged %d RSS and flat entries; date filter mode=rss+flat for %s",
+                                "Merged %d RSS and flat entries; date filter mode=%s for %s",
                                 len(videos_data),
+                                date_filter_mode,
                                 channel.url,
                             )
                         else:
                             date_filter_mode = (
-                                "none"
-                                if time_window == "all"
-                                else "playlist_cap_approximation"
+                                "none" if time_window == "all" else "approximate_date"
                             )
                             logger.info(
                                 "Date filter mode=%s for %s",
@@ -559,10 +568,9 @@ async def run_channel_pipeline(
                 with_duration,
                 len(videos_data),
             )
-            if date_filter_mode != "rss" and time_window != "all" and dated < len(videos_data):
+            if date_filter_mode not in ("youtube_api", "approximate_date+rss") and time_window != "all" and dated < len(videos_data):
                 logger.info(
-                    "Videos without published_at are kept via playlist-cap fallback "
-                    "(extract_flat does not provide upload_date)"
+                    "Videos without published_at are kept via playlist-cap / approximate_date fallback"
                 )
             filtered = [
                 video
@@ -601,20 +609,25 @@ async def run_channel_pipeline(
                     if video.status == VideoStatus.ERROR:
                         video.status = VideoStatus.PENDING
                         video.error_message = None
-                    elif (
-                        video.status == VideoStatus.UPCOMING_EVENT
-                        and video.scheduled_start_at
-                        and video.scheduled_start_at <= utcnow()
-                    ):
-                        video.status = VideoStatus.PENDING
-                        video.error_message = None
-                        if incoming_live_status in (None, "none"):
-                            video.live_status = "none"
-                            video.video_type = classify_video_type(
-                                {**video_data, "live_status": "none"}
-                            )
+                    elif video.status == VideoStatus.UPCOMING_EVENT:
+                        still_upcoming = incoming_live_status == "upcoming" or (
+                            video.scheduled_start_at is not None
+                            and video.scheduled_start_at > utcnow()
+                        )
+                        if not still_upcoming and (
+                            not video.scheduled_start_at
+                            or video.scheduled_start_at <= utcnow()
+                        ):
+                            video.status = VideoStatus.PENDING
+                            video.error_message = None
+                            if incoming_live_status in (None, "none"):
+                                video.live_status = "none"
+                                video.video_type = classify_video_type(
+                                    {**video_data, "live_status": "none"}
+                                )
                     continue
 
+                initial_status = _initial_video_status(video_data)
                 session.add(
                     Video(
                         channel_id=channel_id,
@@ -625,9 +638,15 @@ async def run_channel_pipeline(
                         live_status=video_data.get("live_status") or "none",
                         scheduled_start_at=video_data.get("scheduled_start_at"),
                         video_type=classify_video_type(video_data),
-                        status=VideoStatus.PENDING,
+                        status=initial_status,
                     )
                 )
+                if initial_status == VideoStatus.UPCOMING_EVENT:
+                    logger.info(
+                        "Video %s is an upcoming live event scheduled for %s; skipping processing",
+                        youtube_video_id,
+                        video_data.get("scheduled_start_at"),
+                    )
                 new_count += 1
 
             sync_job.new_videos_found = new_count
@@ -685,7 +704,10 @@ async def run_channel_pipeline(
 async def _restore_pending(video_id: UUID) -> None:
     async with async_session_factory() as session:
         video = await session.get(Video, video_id)
-        if video and video.status != VideoStatus.DONE:
+        if video and video.status not in (
+            VideoStatus.DONE,
+            VideoStatus.UPCOMING_EVENT,
+        ):
             video.status = VideoStatus.PENDING
             await session.commit()
 

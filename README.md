@@ -14,6 +14,8 @@ Everything runs offline after the initial model download. Vector search uses pur
 | **OS** | Windows 10 / 11 |
 | **FFmpeg** | Required by yt-dlp for audio extraction — must be in your system PATH |
 | **Internet** | Needed once to download Whisper + embedding models and YouTube content |
+| **Deno** | Required by current yt-dlp for YouTube JavaScript challenge solving; install separately and put `deno` on PATH |
+| **bgutil-ytdlp-pot-provider** | Installed by `requirements.txt`; its companion HTTP server must be running on `http://127.0.0.1:4416` (see Setup) |
 | **NVIDIA GPU (optional)** | GPU acceleration needs a reasonably recent CUDA 12-compatible NVIDIA driver. The pip dependencies provide the runtime; no separate CUDA Toolkit is required. |
 
 ### Install FFmpeg
@@ -63,7 +65,39 @@ ffmpeg -version
 
    If logs show Whisper falling back to CPU after installation, update your NVIDIA driver from the NVIDIA website.
 
-5. **Configure environment:**
+5. **Install Deno and start the bgutil PO-token provider** (required for yt-dlp YouTube access):
+
+   This app does **not** start the provider for you. Leave it running in a separate terminal whenever you sync channels.
+
+   **Install Deno:**
+
+   ```powershell
+   winget install DenoLand.Deno
+   ```
+
+   Close and reopen the terminal, then verify `deno --version`.
+
+   **Prepare the bgutil provider server** (version should match the installed Python plugin):
+
+   ```powershell
+   $BgutilVersion = python -c "import importlib.metadata as m; print(m.version('bgutil-ytdlp-pot-provider'))"
+   git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$env:USERPROFILE\bgutil-ytdlp-pot-provider"
+   cd "$env:USERPROFILE\bgutil-ytdlp-pot-provider"
+   git checkout $BgutilVersion
+   cd server
+   deno install --allow-scripts=npm:canvas --frozen
+   ```
+
+   Start the provider and leave it running:
+
+   ```powershell
+   cd "$env:USERPROFILE\bgutil-ytdlp-pot-provider\server"
+   deno run --allow-env --allow-net --allow-ffi=node_modules --allow-read=node_modules src/main.ts --port 4416
+   ```
+
+   You should see it listen on port `4416`. The app talks to `http://127.0.0.1:4416` by default (`YT_POT_PROVIDER_BASE_URL`).
+
+6. **Configure environment:**
 
    ```powershell
    copy .env.example .env
@@ -167,6 +201,7 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `MAX_SEARCH_RESULTS` | `20` | Default search result limit |
 | `DEFAULT_TIME_WINDOW` | `7d` | Default time window |
 | `YOUTUBE_DATA_API_KEY` | empty | Optional YouTube Data API v3 key for full metadata coverage |
+| `YT_POT_PROVIDER_BASE_URL` | `http://127.0.0.1:4416` | Local bgutil PO-token HTTP server used by yt-dlp |
 
 ### YouTube Data API Setup (Optional)
 
@@ -228,7 +263,9 @@ The best defense is to use a logged-in YouTube session through a static cookies 
 
 This is more reliable for a long-running desktop app than `cookiesfrombrowser`, which may fail while a browser has its cookie database locked. Authenticated automated use remains your responsibility and may carry account and YouTube Terms-of-Service risk.
 
-Keep `MAX_CONCURRENT_DOWNLOADS` conservative (the default is `2`). Short windows—Last 24 hours and Custom hours—automatically use YouTube's lightweight RSS feed, which has accurate publication times and avoids channel-list pagination. If YouTube still reports a bot check, the app pauses the affected channel and increases the request spacing for the rest of the session; cookies remain the durable remedy.
+Keep `MAX_CONCURRENT_DOWNLOADS` conservative (the default is `2`). Channel listing walks `/videos`, `/shorts`, and `/streams` with per-tab caps, using yt-dlp `approximate_date` plus optional RSS overlay. If YouTube still reports a bot check, the app pauses the affected channel and increases the request spacing for the rest of the session; cookies remain the durable remedy.
+
+Captions are fetched with yt-dlp subtitle download (not `youtube-transcript-api`). Keep the bgutil provider running so those requests can obtain a PO token.
 
 ---
 

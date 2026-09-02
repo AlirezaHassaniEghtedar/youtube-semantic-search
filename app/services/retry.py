@@ -38,7 +38,7 @@ class RateLimitError(Exception):
 
 def looks_like_rate_limit(exc: Exception) -> bool:
     # Scheduled streams are expected, not transient failures. In particular,
-    # youtube-transcript-api can use a broad exception class for them.
+    # A caption extractor can use a broad exception class for them.
     if is_upcoming_event_error(exc):
         return False
     if type(exc).__name__.lower() in RATE_LIMIT_EXCEPTION_NAMES:

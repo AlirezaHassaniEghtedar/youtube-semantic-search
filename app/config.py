@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     MAX_SEARCH_RESULTS: int = 20
     DEFAULT_TIME_WINDOW: str = "7d"
     YOUTUBE_DATA_API_KEY: str | None = None
+    # Local bgutil-ytdlp-pot-provider HTTP server used by yt-dlp for PO tokens.
+    YT_POT_PROVIDER_BASE_URL: str = "http://127.0.0.1:4416"
 
     @property
     def download_path(self) -> Path:
