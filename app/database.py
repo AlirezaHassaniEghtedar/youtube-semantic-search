@@ -40,6 +40,8 @@ async def ensure_columns() -> None:
             ("live_status", "TEXT"),
             ("scheduled_start_at", "DATETIME"),
             ("video_type", "TEXT"),
+            ("source_type", "TEXT DEFAULT 'youtube'"),
+            ("local_file_path", "TEXT"),
         ],
     }
     async with engine.begin() as conn:

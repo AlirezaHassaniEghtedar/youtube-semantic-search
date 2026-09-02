@@ -45,7 +45,7 @@ def load_whisper_model() -> WhisperModel:
     return model
 
 
-def transcribe(model: WhisperModel, audio_path: Path) -> list[dict[str, Any]]:
+def transcribe(model: WhisperModel, audio_path: Path, cleanup: bool = True) -> list[dict[str, Any]]:
     """Transcribe audio file. Returns list of {start, end, text} segments."""
     segments_out: list[dict[str, Any]] = []
 
@@ -68,5 +68,6 @@ def transcribe(model: WhisperModel, audio_path: Path) -> list[dict[str, Any]]:
                 }
             )
 
-    cleanup_audio_file(audio_path)
+    if cleanup:
+        cleanup_audio_file(audio_path)
     return segments_out
