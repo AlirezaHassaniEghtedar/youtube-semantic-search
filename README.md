@@ -13,7 +13,10 @@ Everything runs offline after the initial model download. Vector search uses pur
 | **Python** | 3.11 or newer |
 | **OS** | Windows 10 / 11 |
 | **FFmpeg** | Required by yt-dlp for audio extraction — must be in your system PATH |
-| **Internet** | Needed once to download Whisper + embedding models and YouTube content |
+| **Internet** | Needed to download models and YouTube content |
+| **Deno** | Required by current yt-dlp for YouTube JavaScript challenge solving; install separately and put `deno` on PATH |
+| **Git** | Required only for the manual bgutil provider setup below; you can alternatively download the repository ZIP |
+| **bgutil-ytdlp-pot-provider** | Installed by `requirements.txt`; its local provider server must be prepared and started separately for the optional PO-token path |
 | **NVIDIA GPU (optional)** | GPU acceleration needs a reasonably recent CUDA 12-compatible NVIDIA driver. The pip dependencies provide the runtime; no separate CUDA Toolkit is required. |
 
 ### Install FFmpeg
@@ -63,7 +66,53 @@ ffmpeg -version
 
    If logs show Whisper falling back to CPU after installation, update your NVIDIA driver from the NVIDIA website.
 
-5. **Configure environment:**
+5. **Install the external YouTube runtime prerequisites:**
+
+   The application does **not** download or install Deno or bgutil automatically. This keeps application startup predictable and avoids modifying the machine behind the user's back.
+
+   **Install Deno** (recommended JavaScript runtime for yt-dlp):
+
+   ```powershell
+   winget install DenoLand.Deno
+   ```
+
+   Close and reopen the terminal after installation, then verify:
+
+   ```powershell
+   deno --version
+   ```
+
+   Current yt-dlp enables Deno automatically when it is available on `PATH`. The project does not pass a custom `js_runtimes` dictionary, so it avoids the `Invalid js_runtimes format` error.
+
+   **Prepare the bgutil POT provider:**
+
+   `bgutil-ytdlp-pot-provider` is already installed by `requirements.txt`. The provider server itself must be downloaded and prepared separately. Keep the server version aligned with the installed Python plugin:
+
+   ```powershell
+   $BgutilVersion = python -c "import importlib.metadata as m; print(m.version('bgutil-ytdlp-pot-provider'))"
+   git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$env:USERPROFILE\bgutil-ytdlp-pot-provider"
+   cd "$env:USERPROFILE\bgutil-ytdlp-pot-provider"
+   git checkout $BgutilVersion
+   cd server
+   deno install --allow-scripts=npm:canvas --frozen
+   ```
+
+   Start the provider in a separate terminal and leave it running while the application uses YouTube:
+
+   ```powershell
+   cd "$env:USERPROFILE\bgutil-ytdlp-pot-provider\server"
+   deno run --allow-env --allow-net --allow-ffi=node_modules --allow-read=node_modules src/main.ts --port 4416
+   ```
+
+   You should see the provider start on port `4416`. The application uses the provider's default local endpoint when the bgutil plugin is available.
+
+   Verify that the Python environment can see the plugin:
+
+   ```powershell
+   python -c "import importlib.metadata as m; print('bgutil:', m.version('bgutil-ytdlp-pot-provider'))"
+   ```
+
+6. **Configure environment:**
 
    ```powershell
    copy .env.example .env
@@ -71,6 +120,9 @@ ffmpeg -version
 
    Edit `.env` if you want to change the Whisper model size, embedding model, or other settings.
 
+
+7. **login youtube:**  
+You need to login to YouTube in Firefox browser. 
 ---
 
 ## Launch
@@ -157,7 +209,7 @@ This approach is fast at personal scale (hundreds to low thousands of segments) 
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | Maximum simultaneous audio downloads; raising it increases YouTube rate-limit risk |
 | `MAX_CONCURRENT_TRANSCRIBE` | `2` | Maximum simultaneous Whisper transcriptions |
 | `PREFER_CAPTIONS` | `true` | Use existing YouTube captions before downloading audio and transcribing |
-| `YT_COOKIES_FROM_BROWSER` | firefox | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
+| `YT_COOKIES_FROM_BROWSER` | empty | Optional logged-in browser cookies (`chrome`, `firefox`, `edge`, or `brave`) for yt-dlp |
 | `YT_COOKIES_FILE` | empty | Optional Netscape-format cookies.txt file, used instead of browser cookies |
 | `DOWNLOAD_JITTER_MIN_SECONDS` / `DOWNLOAD_JITTER_MAX_SECONDS` | `1.0` / `4.0` | Random delay before downloads to avoid request bursts |
 | `BOT_CHECK_COOLDOWN_MINUTES` | `15` | How long a batch backs off after a bot-check response |
@@ -227,10 +279,6 @@ You can bundle the app with PyInstaller for distribution without requiring Pytho
 
 ---
 
-## License
-
-This project is provided as-is for personal and educational use.
-
 ## YouTube transcript reliability (current)
 
 The application uses a layered transcript pipeline:
@@ -239,43 +287,25 @@ The application uses a layered transcript pipeline:
 2. `yt-dlp` for a second independent caption path.
 3. `faster-whisper` only when captions are unavailable or a caption provider requires a PO token.
 
-YouTube requests are globally paced across channels. Bot-check and PO-token errors are **not** blindly retried: repeating those requests immediately can increase the block. HTTP 429 and genuinely transient network errors use bounded exponential backoff.
+### External yt-dlp runtime setup
 
-### Recommended yt-dlp setup
+The application intentionally does **not** bootstrap Deno or bgutil at runtime. Install these components once on the machine as described in the Setup section.
 
-For the PyPI installation, install yt-dlp with its default dependency group:
+- `yt-dlp[default]` is installed from PyPI without a version pin, so `pip install -U -r requirements.txt` gets the current compatible yt-dlp release and its default dependencies.
+- Deno is discovered from the normal system `PATH`; yt-dlp enables Deno automatically.
+- `bgutil-ytdlp-pot-provider` is installed from PyPI without a version pin, and its provider server is run separately on `127.0.0.1:4416`.
+- The application does not inject a `js_runtimes` dictionary or download a project-local runtime.
 
-```powershell
-pip install -U "yt-dlp[default]"
-```
+If Deno is missing, the application logs a clear warning. YouTube may then have reduced compatibility until Deno is installed.
 
-Current yt-dlp requires an external JavaScript runtime for YouTube challenge solving. Deno is the recommended runtime. Verify it with:
+### Caption-first behavior
 
-```powershell
-deno --version
-yt-dlp --version
-```
-
-If YouTube asks you to sign in to confirm you are not a bot, optionally configure browser cookies for yt-dlp:
-
-```text
-YT_COOKIES_FROM_BROWSER=firefox
-```
-
-or `edge`, `firefox`, `brave`, etc. Alternatively provide a Netscape-format cookies file with `YT_COOKIES_FILE`.
-
-Cookies are optional. Do not rotate accounts to bypass blocks. Use conservative pacing and, for a production workload that is legitimately authorized to access the content, configure an appropriate proxy using `YT_PROXY` / `TRANSCRIPT_HTTPS_PROXY`.
+When `PREFER_CAPTIONS=true`, the pipeline attempts captions before downloading audio. A successful subtitle file is parsed directly and Whisper is not invoked. Only when captions return no usable segments or are temporarily blocked does the pipeline move to audio download and Whisper transcription.
 
 ### Important limitation
 
-YouTube currently enforces Proof-of-Origin (PO) tokens for some subtitle requests. A PO-token failure is different from a rate limit and cannot be fixed by retrying the same URL. The application therefore records it as a provider failure and falls back to Whisper where audio access is still possible.
+YouTube may enforce Proof-of-Origin (PO) tokens for some requests. A PO-token failure is different from a rate limit and cannot be fixed by blindly retrying the same URL. The application uses the local bgutil provider when available and falls back to Whisper when caption retrieval is unavailable but audio access still works.
 
-### Diagnostic before a large sync
+## License
 
-After installing the requirements, test one video first:
-
-```powershell
-python diagnose_youtube.py nL1kaK_PbY0
-```
-
-The diagnostic reports the installed `yt-dlp` and Deno versions, configured cookies/proxy, and whether a transcript is currently retrievable. This avoids starting a 50/150/400-video job while YouTube access is blocked.
+This project is provided as-is for personal and educational use.

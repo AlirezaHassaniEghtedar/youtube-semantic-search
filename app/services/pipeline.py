@@ -34,7 +34,7 @@ _executor = ThreadPoolExecutor(
 )
 
 WINDOW_MAX_ITEMS: dict[str, int | None] = {
-    "24h": 20,
+    "24h": 50,
     "7d": 150,
     "30d": 400,
     "custom": 1000,
