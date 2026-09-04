@@ -44,6 +44,11 @@ class SyncJobSummary(BaseModel):
 
     model_config = {"from_attributes": True}
 
+class LocalVideoCreate(BaseModel):
+    video_path: str
+    subtitle_path: str | None = None
+    title: str | None = None
+
 
 class VideoSummary(BaseModel):
     id: UUID
@@ -71,7 +76,9 @@ class TranscriptSegment(BaseModel):
     start_time: float
     end_time: float
     text: str
-    youtube_link: str
+    source_type: str = "youtube"
+    youtube_link: str | None = None
+    media_url: str | None = None
 
 
 class SearchRequest(BaseModel):
@@ -92,7 +99,9 @@ class SearchResult(BaseModel):
     end_time: float
     text: str
     similarity: float
-    youtube_link: str
+    source_type: str = "youtube"
+    youtube_link: str | None = None
+    media_url: str | None = None
 
 
 class HealthResponse(BaseModel):
