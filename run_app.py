@@ -26,6 +26,43 @@ POLL_INTERVAL = 0.5
 project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
+class Api:
+    """Exposed to the frontend as window.pywebview.api.* so the UI can open
+    native file-picker dialogs and get real filesystem paths back — a
+    browser <input type="file"> cannot return an absolute path, but the
+    backend (running on this same machine) needs one to read the video and
+    subtitle files directly without copying them.
+    """
+
+    def select_video_file(self) -> str | None:
+        return self._select_file(
+            "Choose a video file",
+            file_types=(
+                "Video files (*.mp4;*.mkv;*.webm;*.avi;*.mov;*.m4v;*.flv)",
+                "All files (*.*)",
+            ),
+        )
+
+    def select_subtitle_file(self) -> str | None:
+        return self._select_file(
+            "Choose a subtitle file",
+            file_types=("Subtitle files (*.srt;*.vtt)", "All files (*.*)"),
+        )
+
+    @staticmethod
+    def _select_file(dialog_title: str, file_types: tuple[str, ...]) -> str | None:
+        window = webview.windows[0] if webview.windows else None
+        if window is None:
+            return None
+        result = window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=file_types,
+        )
+        if not result:
+            return None
+        return result[0]
+
 
 class ServerController:
     def __init__(self) -> None:
@@ -90,6 +127,7 @@ def main() -> None:
         width=1280,
         height=800,
         min_size=(1000, 700),
+        js_api=Api(),
     )
 
     try:
