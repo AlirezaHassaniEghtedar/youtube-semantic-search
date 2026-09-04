@@ -60,6 +60,7 @@ async def get_transcript(
         .order_by(Segment.start_time)
     )
     segments = result.scalars().all()
+    is_local = video.source_type == "local"
 
     if with_timestamps:
         return [
@@ -68,13 +69,19 @@ async def get_transcript(
                 start_time=s.start_time,
                 end_time=s.end_time,
                 text=s.text,
+                source_type=video.source_type,
                 youtube_link=(
-                    f"https://www.youtube.com/watch?v={video.youtube_video_id}"
-                    f"&t={int(s.start_time)}s"
+                    None
+                    if is_local
+                    else f"https://www.youtube.com/watch?v={video.youtube_video_id}&t={int(s.start_time)}s"
+                ),
+                media_url=(
+                    f"/api/local-videos/{video.id}/media#t={s.start_time:.2f}"
+                    if is_local
+                    else None
                 ),
             ).model_dump()
             for s in segments
         ]
-
     merged = " ".join(s.text for s in segments)
     return {"text": merged}
