@@ -148,10 +148,14 @@ function stopPolling() {
   document.getElementById("polling-indicator").classList.add("hidden");
 }
 
+function isChannelActive(c) {
+  return !TERMINAL_CHANNEL_STATUSES.has(c.status) || c.done_videos < c.total_videos;
+}
+
 function checkStopPolling(channels) {
   if (!channels) return;
-  const allTerminal = channels.every((c) => TERMINAL_CHANNEL_STATUSES.has(c.status));
-  if (allTerminal) {
+  const noneActive = channels.every((c) => !isChannelActive(c));
+  if (noneActive) {
     stopPolling();
   }
 }
@@ -165,7 +169,7 @@ async function refreshChannels() {
     updateSearchChannelFilter(channels);
     checkStopPolling(channels);
 
-    const anyActive = channels.some((c) => !TERMINAL_CHANNEL_STATUSES.has(c.status));
+    const anyActive = channels.some(isChannelActive);
     if (anyActive && !pollInterval) startPolling();
 
     return channels;
@@ -376,9 +380,12 @@ async function loadTranscript(withTimestamps) {
       body.innerHTML = segments
         .map((seg) => {
           const dir = detectDir(seg.text);
+          const isLocal = seg.source_type === "local";
+          const link = isLocal ? seg.media_url : seg.youtube_link;
+          const linkTitle = isLocal ? "Play local video" : "Open on YouTube";
           return `
           <div class="transcript-line" data-segment-id="${seg.segment_id}">
-            <a href="${seg.youtube_link}" target="_blank" rel="noopener" class="transcript-ts" title="Open on YouTube">[${formatTimestamp(seg.start_time)}]</a>
+            <a href="${link}" target="_blank" rel="noopener" class="transcript-ts" title="${linkTitle}">[${formatTimestamp(seg.start_time)}]</a>
             <span class="transcript-text" dir="${dir}">${escapeHtml(seg.text)}</span>
           </div>`;
         })
@@ -475,6 +482,9 @@ async function performSearch(e) {
       .map((r) => {
         const dir = detectDir(r.text);
         const pct = Math.round(r.similarity * 100);
+        const isLocal = r.source_type === "local";
+        const watchLink = isLocal ? r.media_url : r.youtube_link;
+        const watchLabel = isLocal ? "▶ Play" : "▶ Watch";
         return `
         <div class="result-card">
           <div class="result-card__header">
@@ -488,7 +498,7 @@ async function performSearch(e) {
           <div class="result-card__footer">
             <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
             <span>⏱ ${formatTimestamp(r.start_time)}</span>
-            <a href="${r.youtube_link}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">▶ Watch</a>
+            <a href="${watchLink}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">${watchLabel}</a>
           </div>
         </div>`;
       })
@@ -562,6 +572,66 @@ function initAddChannelForm() {
   });
 }
 
+// ── Add Local Video ──────────────────────────────────────────────────────
+
+function initAddLocalVideoForm() {
+  const videoInput = document.getElementById("local-video-path");
+  const subtitleInput = document.getElementById("local-subtitle-path");
+
+  const hasNativeDialogs = typeof window.pywebview !== "undefined";
+  document.getElementById("browse-video-btn").classList.toggle("hidden", !hasNativeDialogs);
+  document.getElementById("browse-subtitle-btn").classList.toggle("hidden", !hasNativeDialogs);
+
+  if (hasNativeDialogs) {
+    document.getElementById("browse-video-btn").addEventListener("click", async () => {
+      const path = await window.pywebview.api.select_video_file();
+      if (path) videoInput.value = path;
+    });
+    document.getElementById("browse-subtitle-btn").addEventListener("click", async () => {
+      const path = await window.pywebview.api.select_subtitle_file();
+      if (path) subtitleInput.value = path;
+    });
+  }
+
+  document.getElementById("add-local-video-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById("add-local-video-btn");
+    const videoPath = videoInput.value.trim();
+    const subtitlePath = subtitleInput.value.trim();
+
+    if (!videoPath) {
+      showToast("Please choose a video file", "error");
+      return;
+    }
+
+    setButtonLoading(btn, true);
+    try {
+      await apiFetch("/api/local-videos", {
+        method: "POST",
+        body: JSON.stringify({
+          video_path: videoPath,
+          subtitle_path: subtitlePath || null,
+          title: document.getElementById("local-video-title").value.trim() || null,
+        }),
+      });
+      showToast(
+        subtitlePath
+          ? "Local video added — indexing in the background"
+          : "Local video added — looking for subtitles, or transcribing with Whisper in the background"
+      );
+      videoInput.value = "";
+      subtitleInput.value = "";
+      document.getElementById("local-video-title").value = "";
+      startPolling();
+      await refreshChannels();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setButtonLoading(btn, false);
+    }
+  });
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
@@ -575,6 +645,7 @@ function escapeHtml(str) {
 document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
   initAddChannelForm();
+  initAddLocalVideoForm();
   initModal();
 
   document.getElementById("search-form").addEventListener("submit", performSearch);
