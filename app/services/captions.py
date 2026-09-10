@@ -14,7 +14,7 @@ from app.services.youtube_pace import pace_youtube_request
 
 logger = logging.getLogger(__name__)
 
-PREFERRED_LANGUAGES = ["fa", "en"]
+PREFERRED_LANGUAGES = ["en", "fa"]
 
 _VTT_CUE_RE = re.compile(
     r"(\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->\s*"
@@ -86,6 +86,38 @@ def _find_subtitle_file(directory: Path) -> Path | None:
 def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
     """Download YouTube subtitles with yt-dlp (manual tracks, then auto-captions)."""
     url = f"https://www.youtube.com/watch?v={youtube_video_id}"
+
+    try:
+        manual_subs, auto_subs = _list_native_subtitle_languages(youtube_video_id)
+    except Exception as exc:
+        raise_if_bot_check(exc)
+        if is_upcoming_event_error(exc):
+            raise
+        if isinstance(exc, RateLimitError) or looks_like_rate_limit(exc):
+            raise RateLimitError(str(exc)) from exc
+        logger.exception(
+            "Failed to list subtitle languages for %s", youtube_video_id
+        )
+        return None
+
+    target_lang: str | None = None
+    for language in PREFERRED_LANGUAGES:
+        target_lang = _match_language(
+            manual_subs, language
+        ) or _native_automatic_caption_lang(auto_subs, language)
+        if target_lang:
+            break
+
+    if target_lang is None:
+        logger.info(
+            "No native-language captions (%s) available for %s; "
+            "skipping yt-dlp captions to avoid a translation-triggered "
+            "429, falling back to Whisper.",
+            ", ".join(PREFERRED_LANGUAGES),
+            youtube_video_id,
+        )
+        return None
+
     with tempfile.TemporaryDirectory(prefix=f"yt_caption_{youtube_video_id}_") as temp_dir:
         output_dir = Path(temp_dir)
         ydl_opts: dict[str, Any] = {
@@ -96,14 +128,18 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
             "writesubtitles": True,
             "writeautomaticsub": True,
             "subtitlesformat": "vtt",
-            "subtitleslangs": list(PREFERRED_LANGUAGES),
+            "subtitleslangs": [target_lang],
             "outtmpl": str(output_dir / f"{youtube_video_id}.%(ext)s"),
             "ignoreerrors": False,
             "retries": 3,
             "fragment_retries": 3,
             "socket_timeout": 30,
         }
-        logger.info("Trying to download captions with yt-dlp for %s", youtube_video_id)
+        logger.info(
+            "Trying to download '%s' captions with yt-dlp for %s",
+            target_lang,
+            youtube_video_id,
+        )
         try:
             pace_youtube_request(f"captions_fetch:{youtube_video_id}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -147,3 +183,53 @@ def fetch_captions(youtube_video_id: str) -> list[dict[str, Any]] | None:
             youtube_video_id,
         )
         return segments
+
+
+def _match_language(available: dict[str, Any], language: str) -> str | None:
+    """Find the best key in an available-tracks dict for a language code."""
+    if language in available:
+        return language
+    prefix = f"{language}-"
+    for key in available:
+        if key.startswith(prefix):
+            return key
+    return None
+
+def _native_automatic_caption_lang(
+    automatic_captions: dict[str, Any], language: str
+) -> str | None:
+    """
+    Find a genuinely NATIVE automatic-caption language, never a translated one.
+    ...
+    """
+    orig_key = f"{language}-orig"
+
+    if orig_key in automatic_captions:
+        return orig_key
+
+    if any(key.endswith("-orig") for key in automatic_captions):
+        return None
+
+    return _match_language(automatic_captions, language)
+
+def _list_native_subtitle_languages(
+    youtube_video_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    url = f"https://www.youtube.com/watch?v={youtube_video_id}"
+
+    ydl_opts: dict[str, Any] = {
+        **base_ydl_opts(),
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+
+    pace_youtube_request(f"captions_list:{youtube_video_id}")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = with_backoff(lambda: ydl.extract_info(url, download=False))
+
+    info = info or {}
+    return (
+        dict(info.get("subtitles") or {}),
+        dict(info.get("automatic_captions") or {}),
+    )
