@@ -66,6 +66,56 @@
         </form>
       </section>
 
+      <!-- Add Local Video -->
+      <section class="card" id="add-local-video-section">
+        <h2 class="card__title">Add Local Video</h2>
+        <p class="card__subtitle">
+          Index an offline video file — it uses an embedded subtitle track or a matching
+          .srt/.vtt file if either exists, otherwise it transcribes the audio with Whisper.
+          It will appear alongside your channels and show up in search results.
+        </p>
+        <form id="add-local-video-form" class="form">
+          <div class="form__row">
+            <label for="local-video-path" class="form__label">Video file</label>
+            <div class="form__row--inline">
+              <input
+                type="text"
+                id="local-video-path"
+                class="form__input"
+                placeholder="Path to video file (.mp4, .mkv, .webm, …)"
+                required
+              >
+              <button type="button" id="browse-video-btn" class="btn btn--ghost hidden">Browse…</button>
+            </div>
+          </div>
+          <div class="form__row">
+            <label for="local-subtitle-path" class="form__label">Subtitle file (optional)</label>
+            <div class="form__row--inline">
+              <input
+                type="text"
+                id="local-subtitle-path"
+                class="form__input"
+                placeholder="Leave blank to auto-detect or transcribe with Whisper"
+              >
+              <button type="button" id="browse-subtitle-btn" class="btn btn--ghost hidden">Browse…</button>
+            </div>
+          </div>
+          <div class="form__row">
+            <label for="local-video-title" class="form__label">Title (optional)</label>
+            <input
+              type="text"
+              id="local-video-title"
+              class="form__input"
+              placeholder="Defaults to the video file name"
+            >
+          </div>
+          <button type="submit" class="btn btn--primary" id="add-local-video-btn">
+            <span class="btn__text">Add Local Video</span>
+            <span class="btn__spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+
       <!-- Section 2: Channels List -->
       <section class="card" id="channels-section">
         <div class="card__header">

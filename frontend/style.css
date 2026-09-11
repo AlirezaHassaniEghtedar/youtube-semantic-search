@@ -151,6 +151,13 @@ body {
   margin-bottom: 0;
 }
 
+.card__subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-top: calc(-1 * var(--space-2));
+  margin-bottom: var(--space-4);
+}
+
 /* Forms */
 .form {
   display: flex;
@@ -168,6 +175,11 @@ body {
   flex-direction: row;
   flex-wrap: wrap;
   gap: var(--space-4);
+}
+
+.form__row--inline > .form__input {
+  flex: 1;
+  min-width: 200px;
 }
 
 .form__field {

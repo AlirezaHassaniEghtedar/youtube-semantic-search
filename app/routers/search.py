@@ -39,6 +39,7 @@ def _run_search(
     for idx in top_indices:
         r = rows[idx]
         sim = float(similarities[idx])
+        is_local = r.source_type == "local"
         results.append(
             SearchResult(
                 segment_id=r.id,
@@ -50,14 +51,20 @@ def _run_search(
                 end_time=r.end_time,
                 text=r.text,
                 similarity=sim,
+                source_type=r.source_type,
                 youtube_link=(
-                    f"https://www.youtube.com/watch?v={r.youtube_video_id}"
-                    f"&t={int(r.start_time)}s"
+                    None
+                    if is_local
+                    else f"https://www.youtube.com/watch?v={r.youtube_video_id}&t={int(r.start_time)}s"
+                ),
+                media_url=(
+                    f"/api/local-videos/{r.video_id}/media#t={r.start_time:.2f}"
+                    if is_local
+                    else None
                 ),
             )
         )
     return results
-
 
 @router.post("", response_model=list[SearchResult])
 async def search_segments(
@@ -82,6 +89,8 @@ async def search_segments(
             Video.title,
             Video.youtube_video_id,
             Video.published_at,
+            Video.source_type,
+            Video.local_file_path,
             Channel.name.label("channel_name"),
         )
         .join(Video, Segment.video_id == Video.id)
