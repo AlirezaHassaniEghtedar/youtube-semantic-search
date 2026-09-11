@@ -156,7 +156,65 @@
         </div>
       </section>
 
-      <!-- Section 5: Search -->
+      <!-- Section 5: Chat with sidebar layout -->
+      <section class="card" id="chat-section">
+        <div class="chat-container">
+          <!-- Sidebar -->
+          <div class="chat-sidebar" id="chat-sidebar">
+            <button type="button" class="btn btn--primary btn--block" id="new-chat-btn">
+              + New Chat
+            </button>
+            
+            <input
+              type="text"
+              id="chat-search"
+              class="chat-search"
+              placeholder="Search conversations…"
+              dir="auto"
+            >
+            
+            <div id="chat-conversation-list" class="chat-conversation-list"></div>
+            
+            <div id="chat-sidebar-empty" class="chat-sidebar-empty hidden">
+              <p>No conversations yet.<br>Start one with the button above.</p>
+            </div>
+          </div>
+          
+          <!-- Main chat pane -->
+          <div class="chat-main">
+            <!-- Empty state -->
+            <div id="chat-empty-state" class="chat-empty-state">
+              <p>Select a conversation or create a new one to start chatting.</p>
+            </div>
+            
+            <!-- Active conversation -->
+            <div id="chat-active" class="chat-active hidden">
+              <!-- Messages area -->
+              <div id="chat-messages" class="chat-messages"></div>
+              
+              <!-- Input area -->
+              <div class="chat-input-area">
+                <select id="chat-channel" class="form__select">
+                  <option value="">All channels</option>
+                </select>
+                <textarea
+                  id="chat-input"
+                  class="chat-textarea"
+                  placeholder="Ask a question about your videos…"
+                  dir="auto"
+                  rows="2"
+                ></textarea>
+                <button type="button" class="btn btn--primary" id="chat-send-btn">
+                  <span class="btn__text">Send</span>
+                  <span class="btn__spinner hidden" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 6: Search -->
       <section class="card" id="search-section">
         <h2 class="card__title">Semantic Search</h2>
         <form id="search-form" class="form">

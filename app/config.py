@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     YOUTUBE_DATA_API_KEY: str | None = None
     # Local bgutil-ytdlp-pot-provider HTTP server used by yt-dlp for PO tokens.
     YT_POT_PROVIDER_BASE_URL: str = "http://127.0.0.1:4416"
+    # Gemini API settings for chat interface. Get a free key at https://aistudio.google.com/apikey
+    GEMINI_API_KEY: str | None = None
+    # Optional: comma-separated list of keys to rotate across (round-robin),
+    # e.g. GEMINI_API_KEYS=key1,key2,key3
+    # Takes priority over GEMINI_API_KEY when set. Useful to spread load across
+    # multiple free-tier keys and avoid per-key rate limits / overload errors.
+    GEMINI_API_KEYS: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     @property
     def download_path(self) -> Path:
@@ -62,5 +70,21 @@ class Settings(BaseSettings):
         if local_path.exists() and any(local_path.iterdir()):
             return str(local_path.resolve())
         return self.EMBEDDING_MODEL
+
+    @property
+    def gemini_api_keys(self) -> list[str]:
+        """
+        Parsed list of Gemini API keys to rotate across.
+
+        GEMINI_API_KEYS (comma-separated) takes priority over the single
+        GEMINI_API_KEY when both are set.
+        """
+        if self.GEMINI_API_KEYS:
+            keys = [k.strip() for k in self.GEMINI_API_KEYS.split(",") if k.strip()]
+            if keys:
+                return keys
+        if self.GEMINI_API_KEY:
+            return [self.GEMINI_API_KEY]
+        return []
 
 settings = Settings()

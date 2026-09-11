@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -10,6 +10,16 @@ engine = create_async_engine(
     echo=False,
     future=True,
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
 
 async_session_factory = async_sessionmaker(
     engine,
@@ -53,3 +63,27 @@ async def ensure_columns() -> None:
                     await conn.execute(
                         text(f"ALTER TABLE {table} ADD COLUMN {column_name} {column_type}")
                     )
+    
+    # Bootstrap new chat tables if they don't exist
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                channel_id TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE SET NULL
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sources TEXT,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+            )
+        """))

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import engine, ensure_columns
 from app.models import Base
-from app.routers import channels, local_videos, search, videos
+from app.routers import channels, chat, conversations, local_videos, search, videos
 from app.schemas import HealthResponse
 from app.services.embedder import EmbedderService
 from app.services.transcriber import load_whisper_model
@@ -54,6 +54,8 @@ app.include_router(channels.router)
 app.include_router(videos.router)
 app.include_router(local_videos.router)
 app.include_router(search.router)
+app.include_router(chat.router)
+app.include_router(conversations.router)
 
 
 @app.get("/api/health", response_model=HealthResponse)

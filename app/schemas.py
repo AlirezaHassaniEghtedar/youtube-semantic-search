@@ -106,3 +106,43 @@ class SearchResult(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+class ChatRequest(BaseModel):
+    question: str
+    channel_id: UUID | None = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    sources: list[SearchResult] = []
+    title: str | None = None
+
+
+class ChatConversationSummary(BaseModel):
+    id: UUID
+    title: str | None
+    preview: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChatMessageData(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    role: str
+    content: str
+    sources: list[SearchResult] | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CreateConversationRequest(BaseModel):
+    channel_id: UUID | None = None
+
+
+class RenameConversationRequest(BaseModel):
+    title: str

@@ -259,15 +259,27 @@ function renderChannels(channels) {
 
 function updateSearchChannelFilter(channels) {
   const select = document.getElementById("search-channel");
+  const chatSelect = document.getElementById("chat-channel");
   const current = select.value;
+  const currentChat = chatSelect.value;
+  
   select.innerHTML = '<option value="">All channels</option>';
+  chatSelect.innerHTML = '<option value="">All channels</option>';
+  
   channels.forEach((ch) => {
-    const opt = document.createElement("option");
-    opt.value = ch.id;
-    opt.textContent = ch.name || ch.url;
-    select.appendChild(opt);
+    const opt1 = document.createElement("option");
+    opt1.value = ch.id;
+    opt1.textContent = ch.name || ch.url;
+    select.appendChild(opt1);
+    
+    const opt2 = document.createElement("option");
+    opt2.value = ch.id;
+    opt2.textContent = ch.name || ch.url;
+    chatSelect.appendChild(opt2);
   });
+  
   if (current) select.value = current;
+  if (currentChat) chatSelect.value = currentChat;
 }
 
 // ── Videos ─────────────────────────────────────────────────────────────────
@@ -448,6 +460,30 @@ function initModal() {
 
 // ── Search ─────────────────────────────────────────────────────────────────
 
+function renderSearchResultCard(r) {
+  const dir = detectDir(r.text);
+  const pct = Math.round(r.similarity * 100);
+  const isLocal = r.source_type === "local";
+  const watchLink = isLocal ? r.media_url : r.youtube_link;
+  const watchLabel = isLocal ? "▶ Play" : "▶ Watch";
+  return `
+  <div class="result-card">
+    <div class="result-card__header">
+      <div>
+        <div class="result-card__channel">${escapeHtml(r.channel_name)}</div>
+        <div class="result-card__title" dir="${detectDir(r.video_title)}">${escapeHtml(r.video_title)}</div>
+      </div>
+      <span class="similarity">${pct}% match</span>
+    </div>
+    <p class="result-card__snippet" dir="${dir}">${escapeHtml(r.text)}</p>
+    <div class="result-card__footer">
+      <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
+      <span>⏱ ${formatTimestamp(r.start_time)}</span>
+      <a href="${watchLink}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">${watchLabel}</a>
+    </div>
+  </div>`;
+}
+
 async function performSearch(e) {
   e.preventDefault();
   const btn = document.getElementById("search-btn");
@@ -481,37 +517,521 @@ async function performSearch(e) {
       return;
     }
 
-    container.innerHTML = results
-      .map((r) => {
-        const dir = detectDir(r.text);
-        const pct = Math.round(r.similarity * 100);
-        const isLocal = r.source_type === "local";
-        const watchLink = isLocal ? r.media_url : r.youtube_link;
-        const watchLabel = isLocal ? "▶ Play" : "▶ Watch";
-        return `
-        <div class="result-card">
-          <div class="result-card__header">
-            <div>
-              <div class="result-card__channel">${escapeHtml(r.channel_name)}</div>
-              <div class="result-card__title" dir="${detectDir(r.video_title)}">${escapeHtml(r.video_title)}</div>
-            </div>
-            <span class="similarity">${pct}% match</span>
-          </div>
-          <p class="result-card__snippet" dir="${dir}">${escapeHtml(r.text)}</p>
-          <div class="result-card__footer">
-            <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
-            <span>⏱ ${formatTimestamp(r.start_time)}</span>
-            <a href="${watchLink}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">${watchLabel}</a>
-          </div>
-        </div>`;
-      })
-      .join("");
+    container.innerHTML = results.map(renderSearchResultCard).join("");
   } catch (err) {
     showToast(err.message, "error");
   } finally {
     setButtonLoading(btn, false);
   }
 }
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+
+async function sendChatMessage() {
+  const input = document.getElementById("chat-input");
+  const message = input.value.trim();
+  const btn = document.getElementById("chat-send-btn");
+  
+  if (!message || !currentChatConversationId) return;
+  
+  input.value = "";
+  input.disabled = true;
+  setButtonLoading(btn, true);
+  
+  const messagesContainer = document.getElementById("chat-messages");
+  
+  try {
+    // Show user message
+    renderMessage({ role: "user", content: message, created_at: new Date().toISOString() }, messagesContainer);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    // Show loading indicator
+    const loadingEl = document.createElement("div");
+    loadingEl.className = "chat-loading";
+    loadingEl.innerHTML = '<div class="chat-loading__spinner"></div><span>Thinking…</span>';
+    messagesContainer.appendChild(loadingEl);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    // Send to API
+    const payload = { 
+      question: message,
+      conversation_id: currentChatConversationId 
+    };
+    const channelId = document.getElementById("chat-channel").value;
+    if (channelId) payload.channel_id = channelId;
+    
+    const response = await apiFetch("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    
+    // Remove loading indicator
+    loadingEl.remove();
+    
+    // Show assistant message with sources
+    renderMessage({ 
+      role: "assistant", 
+      content: response.answer, 
+      sources: response.sources,
+      created_at: new Date().toISOString() 
+    }, messagesContainer);
+    
+    // Update conversation title if it was just set
+    if (response.title && currentChatConversationTitle !== response.title) {
+      currentChatConversationTitle = response.title;
+      await refreshConversationList();
+      updateActiveConversationHighlight();
+    }
+    
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  } catch (err) {
+    loadingEl.remove();
+    const errorMsg = document.createElement("div");
+    errorMsg.className = "chat-message chat-message--assistant";
+    errorMsg.innerHTML = `<div class="chat-message__content" style="color: var(--color-error);"><div class="chat-message__text">Error: ${escapeHtml(err.message)}</div></div>`;
+    messagesContainer.appendChild(errorMsg);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    showToast(err.message, "error");
+  } finally {
+    input.disabled = false;
+    setButtonLoading(btn, false);
+    input.focus();
+  }
+}
+
+// ── Chat state ──────────────────────────────────────────────────────────────
+
+let currentChatConversationId = null;
+let currentChatConversationTitle = null;
+let allConversations = [];
+let filteredConversations = [];
+
+// ── Markdown rendering ──────────────────────────────────────────────────────
+
+function renderMarkdown(text) {
+  // Escape HTML first
+  let html = escapeHtml(text);
+  
+  // Bold: **text** or __text__
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
+  
+  // Italic: *text* or _text_
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  html = html.replace(/_(.*?)_/g, '<em>$1</em>');
+  
+  // Inline code: `text`
+  html = html.replace(/`(.*?)`/g, '<code>$1</code>');
+  
+  // Convert line breaks and lists
+  const lines = html.split('\n');
+  let inUl = false;
+  let inOl = false;
+  let output = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Bullet lists
+    if (line.match(/^[-•*] /)) {
+      if (!inUl) {
+        output.push('<ul>');
+        inUl = true;
+      }
+      output.push('<li>' + line.replace(/^[-•*] /, '') + '</li>');
+    }
+    // Numbered lists
+    else if (line.match(/^\d+\. /)) {
+      if (!inOl) {
+        output.push('<ol>');
+        inOl = true;
+      }
+      output.push('<li>' + line.replace(/^\d+\. /, '') + '</li>');
+    }
+    else {
+      if (inUl) { output.push('</ul>'); inUl = false; }
+      if (inOl) { output.push('</ol>'); inOl = false; }
+      if (line) output.push(line);
+    }
+  }
+  
+  if (inUl) output.push('</ul>');
+  if (inOl) output.push('</ol>');
+  
+  return output.join('\n');
+}
+
+// ── Relative timestamps ──────────────────────────────────────────────────────
+
+function getRelativeTime(isoDate) {
+  const date = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function getRecencyGroup(isoDate) {
+  const date = new Date(isoDate);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  
+  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  
+  if (dateOnly.getTime() === today.getTime()) return "Today";
+  if (dateOnly.getTime() === yesterday.getTime()) return "Yesterday";
+  if (dateOnly >= weekAgo) return "Previous 7 days";
+  return "Older";
+}
+
+// ── Message rendering ──────────────────────────────────────────────────────
+
+function renderMessage(message, container) {
+  const msgEl = document.createElement("div");
+  msgEl.className = `chat-message chat-message--${message.role}`;
+  
+  const dir = detectDir(message.content);
+  const contentEl = document.createElement("div");
+  contentEl.className = "chat-message__content";
+  
+  const textEl = document.createElement("div");
+  textEl.className = "chat-message__text";
+  textEl.dir = dir;
+  textEl.innerHTML = renderMarkdown(message.content);
+  
+  contentEl.appendChild(textEl);
+  
+  if (message.role === "assistant") {
+    // Add copy button
+    const actionsEl = document.createElement("div");
+    actionsEl.className = "chat-message__actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "chat-message__action";
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(message.content);
+        copyBtn.textContent = "✓";
+        copyBtn.classList.add("copied");
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+          copyBtn.classList.remove("copied");
+        }, 1500);
+      } catch (e) {
+        showToast("Failed to copy", "error");
+      }
+    });
+    actionsEl.appendChild(copyBtn);
+    contentEl.appendChild(actionsEl);
+  }
+  
+  msgEl.appendChild(contentEl);
+  
+  // Add sources if present
+  if (message.sources && message.sources.length > 0) {
+    const sourcesDiv = document.createElement("div");
+    sourcesDiv.className = "chat-message__sources";
+    sourcesDiv.innerHTML = message.sources.map(renderSearchResultCard).join("");
+    msgEl.appendChild(sourcesDiv);
+  }
+  
+  container.appendChild(msgEl);
+}
+
+// ── Conversation management ──────────────────────────────────────────────────
+
+async function createConversation() {
+  try {
+    const response = await apiFetch("/api/conversations", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    currentChatConversationId = response.id;
+    currentChatConversationTitle = response.title;
+    await refreshConversationList();
+    switchConversation(response.id);
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function refreshConversationList() {
+  try {
+    const response = await apiFetch("/api/conversations");
+    allConversations = response;
+    applyConversationFilter();
+    updateActiveConversationHighlight();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+function applyConversationFilter() {
+  const searchInput = document.getElementById("chat-search");
+  const query = (searchInput?.value || "").toLowerCase();
+  
+  if (!query) {
+    filteredConversations = allConversations;
+  } else {
+    filteredConversations = allConversations.filter(c => 
+      (c.title || "New chat").toLowerCase().includes(query) ||
+      (c.preview || "").toLowerCase().includes(query)
+    );
+  }
+  
+  renderConversationList();
+}
+
+function groupConversationsByRecency(conversations) {
+  const groups = {
+    "Today": [],
+    "Yesterday": [],
+    "Previous 7 days": [],
+    "Older": []
+  };
+  
+  for (const conv of conversations) {
+    const group = getRecencyGroup(conv.updated_at);
+    groups[group].push(conv);
+  }
+  
+  return groups;
+}
+
+function renderConversationList() {
+  const listEl = document.getElementById("chat-conversation-list");
+  const emptyEl = document.getElementById("chat-sidebar-empty");
+  
+  if (filteredConversations.length === 0) {
+    listEl.innerHTML = "";
+    emptyEl.classList.remove("hidden");
+    return;
+  }
+  
+  emptyEl.classList.add("hidden");
+  
+  const groups = groupConversationsByRecency(filteredConversations);
+  let html = "";
+  
+  for (const [groupLabel, convs] of Object.entries(groups)) {
+    if (convs.length === 0) continue;
+    
+    html += `<div class="chat-conversation-group">`;
+    html += `<div class="chat-conversation-group__label">${escapeHtml(groupLabel)}</div>`;
+    
+    for (const conv of convs) {
+      const isActive = conv.id === currentChatConversationId;
+      const title = conv.title || "New chat";
+      const preview = (conv.preview || "").substring(0, 60);
+      const titleAttr = escapeHtml(title);
+      
+      html += `<div class="chat-conversation-item ${isActive ? "chat-conversation-item--active" : ""}" data-id="${conv.id}" title="${titleAttr}">`;
+      html += `<div class="chat-conversation-item__text">`;
+      html += `<div class="chat-conversation-item__title">${escapeHtml(title)}</div>`;
+      if (preview) html += `<div class="chat-conversation-item__preview">${escapeHtml(preview)}</div>`;
+      html += `</div>`;
+      html += `<button class="chat-conversation-item__menu" data-id="${conv.id}">⋮</button>`;
+      html += `</div>`;
+    }
+    
+    html += `</div>`;
+  }
+  
+  listEl.innerHTML = html;
+  
+  // Add event listeners
+  listEl.querySelectorAll(".chat-conversation-item").forEach(item => {
+    item.addEventListener("click", (e) => {
+      if (!e.target.closest(".chat-conversation-item__menu")) {
+        switchConversation(item.dataset.id);
+      }
+    });
+  });
+  
+  // Add menu listeners
+  listEl.querySelectorAll(".chat-conversation-item__menu").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showConversationMenu(btn, btn.dataset.id);
+    });
+  });
+}
+
+function updateActiveConversationHighlight() {
+  document.querySelectorAll(".chat-conversation-item").forEach(item => {
+    item.classList.toggle("chat-conversation-item--active", item.dataset.id === currentChatConversationId);
+  });
+}
+
+async function switchConversation(conversationId) {
+  currentChatConversationId = conversationId;
+  const conv = allConversations.find(c => c.id === conversationId);
+  if (conv) {
+    currentChatConversationTitle = conv.title;
+  }
+  
+  updateActiveConversationHighlight();
+  
+  // Fetch and render messages
+  const messagesContainer = document.getElementById("chat-messages");
+  const emptyState = document.getElementById("chat-empty-state");
+  const activeArea = document.getElementById("chat-active");
+  
+  try {
+    const response = await apiFetch(`/api/conversations/${conversationId}/messages`);
+    
+    messagesContainer.innerHTML = "";
+
+    emptyState.classList.add("hidden");
+    activeArea.classList.remove("hidden");
+    
+    if (response.length === 0) {
+      // Show empty state
+       messagesContainer.innerHTML = '<p class="chat-messages__placeholder">Ask anything about your synced videos.</p>';
+    } else {
+      response.forEach(msg => {
+        renderMessage(msg, messagesContainer);
+      });
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+function showConversationMenu(btn, conversationId) {
+  // Remove existing dropdown
+  const existing = document.querySelector(".chat-menu-dropdown");
+  if (existing) existing.remove();
+  
+  const dropdown = document.createElement("div");
+  dropdown.className = "chat-menu-dropdown";
+  
+  const renameBtn = document.createElement("button");
+  renameBtn.className = "chat-menu-action";
+  renameBtn.textContent = "Rename";
+  renameBtn.addEventListener("click", () => {
+    dropdown.remove();
+    renameConversation(conversationId);
+  });
+  
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "chat-menu-action chat-menu-action--danger";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.addEventListener("click", () => {
+    dropdown.remove();
+    deleteConversation(conversationId);
+  });
+  
+  dropdown.appendChild(renameBtn);
+  dropdown.appendChild(deleteBtn);
+  btn.parentElement.appendChild(dropdown);
+  
+  // Close when clicking elsewhere
+  setTimeout(() => {
+    document.addEventListener("click", function closeDropdown(e) {
+      if (!dropdown.contains(e.target) && e.target !== btn) {
+        dropdown.remove();
+        document.removeEventListener("click", closeDropdown);
+      }
+    });
+  }, 0);
+}
+
+async function renameConversation(conversationId) {
+  const conv = allConversations.find(c => c.id === conversationId);
+  const newTitle = prompt("New title:", conv.title || "");
+  
+  if (newTitle !== null && newTitle !== conv.title) {
+    try {
+      await apiFetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: newTitle.trim() || null }),
+      });
+      await refreshConversationList();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+}
+
+async function deleteConversation(conversationId) {
+  if (!confirm("Delete this conversation?")) return;
+  
+  try {
+    await apiFetch(`/api/conversations/${conversationId}`, {
+      method: "DELETE",
+    });
+    
+    // If deleted conversation was active, switch to another
+    if (conversationId === currentChatConversationId) {
+      if (allConversations.length > 1) {
+        const nextConv = allConversations.find(c => c.id !== conversationId);
+        if (nextConv) {
+          await switchConversation(nextConv.id);
+        }
+      } else {
+        currentChatConversationId = null;
+        currentChatConversationTitle = null;
+        document.getElementById("chat-empty-state").classList.remove("hidden");
+        document.getElementById("chat-active").classList.add("hidden");
+      }
+    }
+    
+    await refreshConversationList();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+function initChat() {
+  // New chat button
+  document.getElementById("new-chat-btn").addEventListener("click", createConversation);
+  
+  // Search filter
+  document.getElementById("chat-search").addEventListener("input", applyConversationFilter);
+  
+  // Send message
+  const sendBtn = document.getElementById("chat-send-btn");
+  const input = document.getElementById("chat-input");
+  
+  sendBtn.addEventListener("click", () => {
+    if (currentChatConversationId) {
+      sendChatMessage();
+    }
+  });
+  
+  input.addEventListener("keypress", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (currentChatConversationId) {
+        sendChatMessage();
+      }
+    }
+  });
+  
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.shiftKey) {
+      // Allow shift+enter for newline
+    }
+  });
+  
+  // Load initial conversations
+  refreshConversationList();
+}
+
 
 // ── Add Channel ────────────────────────────────────────────────────────────
 
@@ -650,6 +1170,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initAddChannelForm();
   initAddLocalVideoForm();
   initModal();
+  initChat();
 
   document.getElementById("search-form").addEventListener("submit", performSearch);
   document.getElementById("clear-search-btn").addEventListener("click", () => {

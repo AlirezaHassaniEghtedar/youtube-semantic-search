@@ -167,3 +167,43 @@ class Segment(Base):
     )
 
     video: Mapped["Video"] = relationship("Video", back_populates="segments")
+
+
+
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    channel_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("channels.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        "ChatMessage", back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # "user" or "assistant"
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sources: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON-serialized list
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    conversation: Mapped["ChatConversation"] = relationship(
+        "ChatConversation", back_populates="messages"
+    )
