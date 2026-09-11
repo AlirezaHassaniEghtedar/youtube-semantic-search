@@ -1,3 +1,5 @@
+import asyncio
+import itertools
 import json
 import logging
 from uuid import UUID
@@ -13,6 +15,96 @@ from app.services.retrieval import retrieve_segments
 logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# Status codes worth rotating to the next key for. 401/403 mean *this* key is
+# bad (revoked/invalid), 429 means *this* key's quota is exhausted, and 503
+# means the model is overloaded (not key-specific, but harmless to retry with
+# another key/project in case it's routed differently).
+KEY_ROTATE_STATUS = {401, 403, 429, 503}
+# Only these are worth waiting and re-trying for once every key has failed
+# once — 401/403 (bad key) won't ever fix itself by waiting.
+RETRYABLE_STATUS = {429, 503}
+
+# How many full passes over the key list to attempt before giving up.
+GEMINI_MAX_PASSES = 3
+GEMINI_RETRY_BASE_DELAY_SECONDS = 1.5
+
+# Module-level round-robin cursor so successive chat requests spread evenly
+# across configured keys, not just failures within a single request.
+_key_cycle_lock = asyncio.Lock()
+_key_counter = itertools.count()
+
+
+async def _get_rotated_keys() -> list[str]:
+    """Return the configured API keys, rotated to start at the next key in line."""
+    keys = settings.gemini_api_keys
+    if not keys:
+        return []
+    if len(keys) == 1:
+        return keys
+    async with _key_cycle_lock:
+        start = next(_key_counter) % len(keys)
+    return keys[start:] + keys[:start]
+
+
+async def _call_gemini(
+    client: httpx.AsyncClient,
+    prompt: str,
+    max_output_tokens: int,
+    temperature: float = 0.7,
+) -> httpx.Response:
+    """
+    Call Gemini's generateContent endpoint, rotating across all configured
+    API keys on 401/403/429/503 responses, and retrying with backoff once
+    every key has been tried and the failures look transient (429/503).
+    """
+    keys = await _get_rotated_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key configured")
+
+    last_response: httpx.Response | None = None
+
+    for cycle in range(GEMINI_MAX_PASSES):
+        for i, key in enumerate(keys):
+            response = await client.post(
+                f"{GEMINI_API_BASE}/{settings.GEMINI_MODEL}:generateContent",
+                params={"key": key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_output_tokens,
+                    },
+                },
+            )
+
+            if response.status_code not in KEY_ROTATE_STATUS:
+                return response
+
+            last_response = response
+            if len(keys) > 1:
+                logger.warning(
+                    f"Gemini key #{i + 1}/{len(keys)} returned "
+                    f"{response.status_code}, trying next key"
+                )
+
+        # Exhausted every key this pass. Only worth waiting and looping again
+        # if the failures were rate/overload related.
+        if (
+            cycle < GEMINI_MAX_PASSES - 1
+            and last_response is not None
+            and last_response.status_code in RETRYABLE_STATUS
+        ):
+            delay = GEMINI_RETRY_BASE_DELAY_SECONDS * (2**cycle)
+            logger.warning(
+                f"All {len(keys)} Gemini key(s) exhausted this pass, "
+                f"waiting {delay:.1f}s before retrying"
+            )
+            await asyncio.sleep(delay)
+        else:
+            break
+
+    return last_response
 
 
 def _is_persian(text: str) -> bool:
@@ -36,25 +128,15 @@ def _build_retrieval_context(segments: list[SearchResult]) -> str:
 
 async def generate_conversation_title(question: str) -> str:
     """Generate a concise 3-6 word title for a conversation using Gemini."""
-    if not settings.GEMINI_API_KEY:
+    if not settings.gemini_api_keys:
         # Fallback to truncation
         return (question[:50] + "...") if len(question) > 50 else question
     
     try:
         prompt = f'Create a concise 3-6 word title for this user question (respond ONLY with the title, no punctuation or quotes):\n\n{question}'
         
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{GEMINI_API_BASE}/{settings.GEMINI_MODEL}:generateContent",
-                params={"key": settings.GEMINI_API_KEY},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.7,
-                        "maxOutputTokens": 20,
-                    }
-                },
-            )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await _call_gemini(client, prompt, max_output_tokens=20)
         
         if response.status_code == 200:
             data = response.json()
@@ -73,7 +155,7 @@ async def generate_conversation_title(question: str) -> str:
     return (question[:50] + "...") if len(question) > 50 else question
 
 
-
+def _build_gemini_prompt(question: str, context: str, segments: list[SearchResult]) -> str:
     """Build the prompt for Gemini with structured output instruction."""
     language = "Persian" if _is_persian(question) else "English"
     
@@ -126,9 +208,9 @@ async def answer_question(
     that Gemini determined are actually relevant).
     """
     
-    if not settings.GEMINI_API_KEY:
+    if not settings.gemini_api_keys:
         return ChatResponse(
-            answer="⚠️ Chat is not configured. Please set GEMINI_API_KEY in your .env file. Get a free key at https://aistudio.google.com/apikey",
+            answer="⚠️ Chat is not configured. Please set GEMINI_API_KEY (or GEMINI_API_KEYS) in your .env file. Get a free key at https://aistudio.google.com/apikey",
             sources=[],
         )
     
@@ -151,37 +233,28 @@ async def answer_question(
         context = _build_retrieval_context(segments)
         prompt = _build_gemini_prompt(question, context, segments)
         
-        # Call Gemini API
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{GEMINI_API_BASE}/{settings.GEMINI_MODEL}:generateContent",
-                params={"key": settings.GEMINI_API_KEY},
-                json={
-                    "contents": [
-                        {
-                            "parts": [
-                                {"text": prompt}
-                            ]
-                        }
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.7,
-                        "maxOutputTokens": 1024,
-                    }
-                },
-            )
-        
-        if response.status_code == 429:
-            # Quota exceeded
+        # Call Gemini API (rotates keys and retries automatically on 401/403/429/503)
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await _call_gemini(client, prompt, max_output_tokens=1024)
+
+        if response.status_code == 503:
+            # Still overloaded after exhausting all keys/retries
             return ChatResponse(
-                answer="⏱️ Chat is temporarily unavailable due to API rate limits. Please try again in a moment.",
+                answer="⏱️ The AI model is currently overloaded on Google's side. Please try again in a minute.",
+                sources=[],
+            )
+
+        if response.status_code == 429:
+            # Quota exceeded on all configured keys
+            return ChatResponse(
+                answer="⏱️ Chat is temporarily unavailable due to API rate limits on all configured keys. Please try again in a moment.",
                 sources=[],
             )
         
         if response.status_code == 401 or response.status_code == 403:
-            # Invalid API key
+            # Invalid API key(s)
             return ChatResponse(
-                answer="⚠️ Invalid or expired GEMINI_API_KEY. Please check your .env file and restart the app. Get a free key at https://aistudio.google.com/apikey",
+                answer="⚠️ Invalid or expired Gemini API key(s). Please check GEMINI_API_KEY / GEMINI_API_KEYS in your .env file and restart the app. Get a free key at https://aistudio.google.com/apikey",
                 sources=[],
             )
         

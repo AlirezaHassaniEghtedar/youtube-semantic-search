@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
+from sqlalchemy.orm import selectinload
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, select
@@ -52,7 +53,11 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
 ):
     """List all conversations, most recently updated first."""
-    stmt = select(ChatConversation).order_by(desc(ChatConversation.updated_at))
+    stmt = (
+    select(ChatConversation)
+    .options(selectinload(ChatConversation.messages))
+    .order_by(desc(ChatConversation.updated_at))
+)
     result = await db.execute(stmt)
     conversations = result.scalars().all()
     

@@ -942,6 +942,19 @@ body {
   color: var(--color-accent-text);
 }
 
+.chat-conversation-item--active:hover {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.chat-conversation-item--active:hover {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+  filter: brightness(1.08);
+}
+
 .chat-conversation-item__text {
   flex: 1;
   min-width: 0;

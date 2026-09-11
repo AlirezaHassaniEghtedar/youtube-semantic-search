@@ -70,7 +70,7 @@ async def chat(
     # Serialize sources to JSON
     sources_json = None
     if response.sources:
-        sources_json = json.dumps([s.model_dump() for s in response.sources])
+        sources_json = json.dumps([s.model_dump(mode="json") for s in response.sources])
     
     # Save assistant message
     assistant_msg = ChatMessage(

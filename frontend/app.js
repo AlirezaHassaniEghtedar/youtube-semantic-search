@@ -756,6 +756,7 @@ async function createConversation() {
   try {
     const response = await apiFetch("/api/conversations", {
       method: "POST",
+      body: JSON.stringify({}),
     });
     currentChatConversationId = response.id;
     currentChatConversationTitle = response.title;
@@ -892,18 +893,17 @@ async function switchConversation(conversationId) {
     const response = await apiFetch(`/api/conversations/${conversationId}/messages`);
     
     messagesContainer.innerHTML = "";
+
+    emptyState.classList.add("hidden");
+    activeArea.classList.remove("hidden");
     
     if (response.length === 0) {
       // Show empty state
-      emptyState.classList.remove("hidden");
-      activeArea.classList.add("hidden");
+       messagesContainer.innerHTML = '<p class="chat-messages__placeholder">Ask anything about your synced videos.</p>';
     } else {
-      // Render messages
       response.forEach(msg => {
         renderMessage(msg, messagesContainer);
       });
-      emptyState.classList.add("hidden");
-      activeArea.classList.remove("hidden");
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
   } catch (err) {
