@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy[asyncio]
 aiosqlite
+asyncpg
 numpy
 yt-dlp[default]
 bgutil-ytdlp-pot-provider

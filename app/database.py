@@ -29,7 +29,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def ensure_columns() -> None:
-    """Apply safe, additive SQLite schema updates for existing installations."""
+    """Apply safe, additive SQLite schema updates for existing installations.
+
+    This only makes sense for SQLite: it patches an existing .db file that
+    predates certain columns. On Postgres, a brand-new database gets its
+    full schema (including these columns) from Base.metadata.create_all()
+    in main.py's startup, so there's nothing to patch — and PRAGMA
+    table_info is SQLite-only syntax that would error on Postgres.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
     column_specs = {
         "channels": [
             ("last_synced_item_count", "INTEGER"),
