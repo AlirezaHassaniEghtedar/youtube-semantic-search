@@ -34,7 +34,46 @@ def _build_retrieval_context(segments: list[SearchResult]) -> str:
     return "\n\n".join(lines)
 
 
-def _build_gemini_prompt(question: str, context: str, segments: list[SearchResult]) -> str:
+async def generate_conversation_title(question: str) -> str:
+    """Generate a concise 3-6 word title for a conversation using Gemini."""
+    if not settings.GEMINI_API_KEY:
+        # Fallback to truncation
+        return (question[:50] + "...") if len(question) > 50 else question
+    
+    try:
+        prompt = f'Create a concise 3-6 word title for this user question (respond ONLY with the title, no punctuation or quotes):\n\n{question}'
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{GEMINI_API_BASE}/{settings.GEMINI_MODEL}:generateContent",
+                params={"key": settings.GEMINI_API_KEY},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.7,
+                        "maxOutputTokens": 20,
+                    }
+                },
+            )
+        
+        if response.status_code == 200:
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
+                if parts:
+                    title = parts[0].get("text", "").strip()
+                    if title:
+                        return title
+    except Exception as e:
+        logger.debug(f"Title generation failed, using fallback: {e}")
+    
+    # Fallback to truncation
+    return (question[:50] + "...") if len(question) > 50 else question
+
+
+
     """Build the prompt for Gemini with structured output instruction."""
     language = "Persian" if _is_persian(question) else "English"
     
