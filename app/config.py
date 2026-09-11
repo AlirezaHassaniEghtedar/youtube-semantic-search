@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     YOUTUBE_DATA_API_KEY: str | None = None
     # Local bgutil-ytdlp-pot-provider HTTP server used by yt-dlp for PO tokens.
     YT_POT_PROVIDER_BASE_URL: str = "http://127.0.0.1:4416"
+    # Gemini API settings for chat interface. Get a free key at https://aistudio.google.com/apikey
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     @property
     def download_path(self) -> Path:

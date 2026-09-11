@@ -259,15 +259,27 @@ function renderChannels(channels) {
 
 function updateSearchChannelFilter(channels) {
   const select = document.getElementById("search-channel");
+  const chatSelect = document.getElementById("chat-channel");
   const current = select.value;
+  const currentChat = chatSelect.value;
+  
   select.innerHTML = '<option value="">All channels</option>';
+  chatSelect.innerHTML = '<option value="">All channels</option>';
+  
   channels.forEach((ch) => {
-    const opt = document.createElement("option");
-    opt.value = ch.id;
-    opt.textContent = ch.name || ch.url;
-    select.appendChild(opt);
+    const opt1 = document.createElement("option");
+    opt1.value = ch.id;
+    opt1.textContent = ch.name || ch.url;
+    select.appendChild(opt1);
+    
+    const opt2 = document.createElement("option");
+    opt2.value = ch.id;
+    opt2.textContent = ch.name || ch.url;
+    chatSelect.appendChild(opt2);
   });
+  
   if (current) select.value = current;
+  if (currentChat) chatSelect.value = currentChat;
 }
 
 // ── Videos ─────────────────────────────────────────────────────────────────
@@ -448,6 +460,30 @@ function initModal() {
 
 // ── Search ─────────────────────────────────────────────────────────────────
 
+function renderSearchResultCard(r) {
+  const dir = detectDir(r.text);
+  const pct = Math.round(r.similarity * 100);
+  const isLocal = r.source_type === "local";
+  const watchLink = isLocal ? r.media_url : r.youtube_link;
+  const watchLabel = isLocal ? "▶ Play" : "▶ Watch";
+  return `
+  <div class="result-card">
+    <div class="result-card__header">
+      <div>
+        <div class="result-card__channel">${escapeHtml(r.channel_name)}</div>
+        <div class="result-card__title" dir="${detectDir(r.video_title)}">${escapeHtml(r.video_title)}</div>
+      </div>
+      <span class="similarity">${pct}% match</span>
+    </div>
+    <p class="result-card__snippet" dir="${dir}">${escapeHtml(r.text)}</p>
+    <div class="result-card__footer">
+      <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
+      <span>⏱ ${formatTimestamp(r.start_time)}</span>
+      <a href="${watchLink}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">${watchLabel}</a>
+    </div>
+  </div>`;
+}
+
 async function performSearch(e) {
   e.preventDefault();
   const btn = document.getElementById("search-btn");
@@ -481,36 +517,84 @@ async function performSearch(e) {
       return;
     }
 
-    container.innerHTML = results
-      .map((r) => {
-        const dir = detectDir(r.text);
-        const pct = Math.round(r.similarity * 100);
-        const isLocal = r.source_type === "local";
-        const watchLink = isLocal ? r.media_url : r.youtube_link;
-        const watchLabel = isLocal ? "▶ Play" : "▶ Watch";
-        return `
-        <div class="result-card">
-          <div class="result-card__header">
-            <div>
-              <div class="result-card__channel">${escapeHtml(r.channel_name)}</div>
-              <div class="result-card__title" dir="${detectDir(r.video_title)}">${escapeHtml(r.video_title)}</div>
-            </div>
-            <span class="similarity">${pct}% match</span>
-          </div>
-          <p class="result-card__snippet" dir="${dir}">${escapeHtml(r.text)}</p>
-          <div class="result-card__footer">
-            <button type="button" class="btn btn--ghost btn--sm" data-video-id="${r.video_id}" data-video-title="${escapeHtml(r.video_title)}" data-segment-id="${r.segment_id}" data-start-time="${r.start_time}" onclick="openTranscriptAtSegment(this.dataset.videoId, this.dataset.videoTitle, this.dataset.segmentId, Number(this.dataset.startTime))">View in transcript</button>
-            <span>⏱ ${formatTimestamp(r.start_time)}</span>
-            <a href="${watchLink}" target="_blank" rel="noopener" class="btn btn--primary btn--sm">${watchLabel}</a>
-          </div>
-        </div>`;
-      })
-      .join("");
+    container.innerHTML = results.map(renderSearchResultCard).join("");
   } catch (err) {
     showToast(err.message, "error");
   } finally {
     setButtonLoading(btn, false);
   }
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+
+async function sendChatMessage() {
+  const input = document.getElementById("chat-input");
+  const message = input.value.trim();
+  const btn = document.getElementById("chat-send-btn");
+  const container = document.getElementById("chat-messages");
+  
+  if (!message) return;
+  
+  input.value = "";
+  input.disabled = true;
+  setButtonLoading(btn, true);
+  
+  // Add user message to UI
+  const userMsg = document.createElement("div");
+  userMsg.className = "chat-message chat-message--user";
+  userMsg.innerHTML = `<div class="chat-message__content"><div class="chat-message__text">${escapeHtml(message)}</div></div>`;
+  container.appendChild(userMsg);
+  container.scrollTop = container.scrollHeight;
+  
+  try {
+    const payload = { question: message };
+    const channelId = document.getElementById("chat-channel").value;
+    if (channelId) payload.channel_id = channelId;
+    
+    const response = await apiFetch("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    
+    // Add assistant message
+    const assistantMsg = document.createElement("div");
+    assistantMsg.className = "chat-message chat-message--assistant";
+    assistantMsg.innerHTML = `<div class="chat-message__content"><div class="chat-message__text" dir="${detectDir(response.answer)}">${escapeHtml(response.answer)}</div></div>`;
+    
+    // Add sources if present
+    if (response.sources && response.sources.length > 0) {
+      const sourcesDiv = document.createElement("div");
+      sourcesDiv.className = "chat-message__sources";
+      sourcesDiv.innerHTML = response.sources.map(renderSearchResultCard).join("");
+      assistantMsg.appendChild(sourcesDiv);
+    }
+    
+    container.appendChild(assistantMsg);
+    container.scrollTop = container.scrollHeight;
+  } catch (err) {
+    const errorMsg = document.createElement("div");
+    errorMsg.className = "chat-message chat-message--assistant";
+    errorMsg.innerHTML = `<div class="chat-message__content" style="color: var(--color-error);"><div class="chat-message__text">Error: ${escapeHtml(err.message)}</div></div>`;
+    container.appendChild(errorMsg);
+    container.scrollTop = container.scrollHeight;
+  } finally {
+    input.disabled = false;
+    setButtonLoading(btn, false);
+    input.focus();
+  }
+}
+
+function initChat() {
+  const sendBtn = document.getElementById("chat-send-btn");
+  const input = document.getElementById("chat-input");
+  
+  sendBtn.addEventListener("click", sendChatMessage);
+  input.addEventListener("keypress", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
 }
 
 // ── Add Channel ────────────────────────────────────────────────────────────
@@ -650,6 +734,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initAddChannelForm();
   initAddLocalVideoForm();
   initModal();
+  initChat();
 
   document.getElementById("search-form").addEventListener("submit", performSearch);
   document.getElementById("clear-search-btn").addEventListener("click", () => {

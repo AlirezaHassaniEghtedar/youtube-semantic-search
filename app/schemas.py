@@ -106,3 +106,13 @@ class SearchResult(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+class ChatRequest(BaseModel):
+    question: str
+    channel_id: UUID | None = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    sources: list[SearchResult] = []

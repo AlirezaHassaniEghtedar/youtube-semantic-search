@@ -156,7 +156,35 @@
         </div>
       </section>
 
-      <!-- Section 5: Search -->
+      <!-- Section 5: Chat -->
+      <section class="card" id="chat-section">
+        <h2 class="card__title">Chat about Videos</h2>
+        <p class="card__subtitle">
+          Ask a question about your videos in natural language. The assistant will search your transcripts
+          and provide an answer with references.
+        </p>
+        <div class="form" style="display: flex; gap: 0.5rem;">
+          <select id="chat-channel" class="form__select" style="flex: 0 0 auto;">
+            <option value="">All channels</option>
+          </select>
+          <div style="flex: 1; display: flex; gap: 0.5rem;">
+            <input
+              type="text"
+              id="chat-input"
+              class="form__input"
+              placeholder="Ask a question about your videos…"
+              dir="auto"
+            >
+            <button type="button" class="btn btn--primary" id="chat-send-btn">
+              <span class="btn__text">Send</span>
+              <span class="btn__spinner hidden" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div id="chat-messages" class="chat-messages"></div>
+      </section>
+
+      <!-- Section 6: Search -->
       <section class="card" id="search-section">
         <h2 class="card__title">Semantic Search</h2>
         <form id="search-form" class="form">
