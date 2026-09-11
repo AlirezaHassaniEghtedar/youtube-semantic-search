@@ -8,6 +8,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -113,8 +114,9 @@ class Video(Base):
     __tablename__ = "videos"
     __table_args__ = (
         UniqueConstraint("channel_id", "youtube_video_id", name="uq_channel_video"),
+        Index("ix_videos_channel_id", "channel_id"),
+        Index("ix_videos_published_at", "published_at"),
     )
-
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     channel_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("channels.id", ondelete="CASCADE"), nullable=False
@@ -153,6 +155,9 @@ class Video(Base):
 
 class Segment(Base):
     __tablename__ = "segments"
+    __table_args__ = (
+        Index("ix_segments_video_id", "video_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     video_id: Mapped[uuid.UUID] = mapped_column(
