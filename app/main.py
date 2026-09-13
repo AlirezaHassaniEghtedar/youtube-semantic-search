@@ -16,7 +16,10 @@ from app.services.transcriber import load_whisper_model
 
 logger = logging.getLogger(__name__)
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+# Serve the Vite production build produced by frontend-react/ (see its
+# package.json: `npm run build` outputs to ../dist). Build it before launching.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIST_DIR = PROJECT_ROOT / "dist"
 
 
 @asynccontextmanager
@@ -63,9 +66,25 @@ async def health_check():
     return HealthResponse(status="ok")
 
 
-app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+if not FRONTEND_DIST_DIR.is_dir():
+    raise RuntimeError(
+        "Frontend build not found at %s. Build it first: "
+        "cd frontend-react && npm install && npm run build" % FRONTEND_DIST_DIR
+    )
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIST_DIR)), name="static")
 
 
-@app.get("/")
-async def serve_index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """Serve the built SPA. Asset paths (/assets/*) resolve inside the dist
+    directory; any unknown path falls back to index.html so client-side
+    routes and deep links keep working."""
+    candidate = FRONTEND_DIST_DIR / full_path
+    if (
+        full_path
+        and candidate.is_file()
+        and FRONTEND_DIST_DIR.resolve() in candidate.resolve().parents
+    ):  # path traversal guard
+        return FileResponse(candidate)
+    return FileResponse(FRONTEND_DIST_DIR / "index.html")

@@ -11,6 +11,7 @@ Everything runs offline after the initial model download. Vector search uses pur
 | Requirement | Details |
 |---|---|
 | **Python** | 3.11 or newer |
+| **Node.js + npm** | Required to build the UI (`cd frontend-react && npm install && npm run build`); end users of a pre-built copy only need the resulting `dist/` folder |
 | **OS** | Windows 10 / 11 |
 | **FFmpeg** | Required by yt-dlp for audio extraction — must be in your system PATH |
 | **Internet** | Needed to download models and YouTube content |
@@ -231,7 +232,8 @@ youtube_search_desktop/
 ├── data/               # SQLite database (auto-created)
 ├── downloads/          # Temp audio files (auto-cleaned)
 ├── app/                # FastAPI backend
-└── frontend/           # HTML/CSS/JS UI
+├── frontend-react/     # React + TypeScript UI (Vite)
+└── dist/               # Built UI served by FastAPI (npm run build)
 ```
 
 ---
@@ -250,7 +252,7 @@ You can bundle the app with PyInstaller for distribution without requiring Pytho
 
    ```powershell
    pyinstaller --onefile --windowed ^
-     --add-data "frontend;frontend" ^
+     --add-data "dist;dist" ^
      --add-data ".env;." ^
      --hidden-import=faster_whisper ^
      --hidden-import=sentence_transformers ^
