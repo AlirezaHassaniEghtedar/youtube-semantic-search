@@ -28,3 +28,24 @@ ERROR: [youtube] kIMgqJiw_Js: Sign in to confirm you’re not a bot. Use --cookies
 Possible YouTube rate limit (attempt 2/3); backing off 10.5s: ERROR: [youtube] kIMgqJiw_Js: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
 ERROR: [youtube] RpqwIqyxk5k: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
 Possible YouTube rate limit (attempt 2/3); backing off 11.6s: ERROR: [youtube] RpqwIqyxk5k: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+ERROR: [youtube] 8LUAkdSQ-Ro: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+YouTube rate limit on video 8LUAkdSQ-Ro: ERROR: [youtube] 8LUAkdSQ-Ro: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+Channel 698a35af-f527-4e97-b90b-745529531029 YouTube block streak=1; cooldown=15 minutes (cap=120)
+Aborting remaining YouTube requests for this sync; cooldown until 2026-09-13 01:44:14.787190+00:00
+ERROR: [youtube] kIMgqJiw_Js: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+YouTube rate limit on video kIMgqJiw_Js: ERROR: [youtube] kIMgqJiw_Js: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+Channel 698a35af-f527-4e97-b90b-745529531029 YouTube block streak=2; cooldown=30 minutes (cap=120)
+Aborting remaining YouTube requests for this sync; cooldown until 2026-09-13 01:59:17.618690+00:00
+YouTube rate-limited this IP — wait before retrying: ERROR: [youtube] kIMgqJiw_Js: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+Error on reading from the event loop self pipe
+loop: <ProactorEventLoop running=True closed=False debug=False>
+Traceback (most recent call last):
+  File "C:\Users\LENOVO\AppData\Local\Programs\Python\Python313\Lib\asyncio\proactor_events.py", line 792, in _loop_self_reading
+    f.result()  # may raise
+    ~~~~~~~~^^
+  File "C:\Users\LENOVO\AppData\Local\Programs\Python\Python313\Lib\asyncio\windows_events.py", line 804, in _poll
+    value = callback(transferred, key, ov)
+  File "C:\Users\LENOVO\AppData\Local\Programs\Python\Python313\Lib\asyncio\windows_events.py", line 463, in finish_socket_func
+    return ov.getresult()
+           ~~~~~~~~~~~~^^
+ConnectionAbortedError: [WinError 1236] The network connection was aborted by the local system
