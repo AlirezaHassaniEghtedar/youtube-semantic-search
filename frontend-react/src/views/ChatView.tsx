@@ -185,7 +185,7 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
               className="chat-textarea"
               placeholder="Ask a question about your videos…"
               dir="auto"
-              rows={2}
+              rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}

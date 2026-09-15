@@ -4,6 +4,7 @@ import { getRecencyGroup } from "../lib/format";
 import { useToast } from "../context/ToastContext";
 import { Button } from "../components/Button";
 import type { ChatConversation } from "../types";
+import MingcuteEditLine from "../icons/MingcuteEditLine";
 
 // Conversation sidebar — port of the vanilla chat sidebar plus the grouping
 // from groupConversationsByRecency. The active-item hover contrast bug from
@@ -114,7 +115,8 @@ export function ConversationSidebar({
   return (
     <aside className="chat-sidebar" ref={sidebarRef}>
       <Button variant="primary" block onClick={handleNewChat}>
-        + New Chat
+        <MingcuteEditLine />
+        <span style={{marginLeft:"0.5rem"}}>New Chat</span>
       </Button>
 
       <input
