@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,7 @@ from app.services.downloader import (
     fetch_video_live_metadata,
     list_channel_videos,
     merge_rss_and_flat,
+    _resolve_channel_id,
 )
 from app.services.embedder import EmbedderService, serialize_embedding
 from app.services.live_detection import is_upcoming_event_error
@@ -40,6 +42,7 @@ from app.services.text_processor import chunk
 from app.services.youtube_api import (
     QuotaExhaustedError,
     YouTubeAPIError,
+    fetch_channel_title_via_api,
     fetch_channel_videos_via_api,
     fetch_video_durations_via_api,
     fetch_live_status_via_api,
@@ -229,14 +232,28 @@ def resolve_fetch_range(
 
 
 # NOTE: published_at sources, in accuracy order: YouTube Data API (optional
-# key), yt-dlp flat listing with youtubetab.approximate_date, then RSS pubDate
-# overlay for the newest ~15 items. Duration comes from the API or flat listing.
-# "all" never date-filters.
+# key, EXACT to the second), RSS pubDate overlay (EXACT, newest ~15 uploads),
+# then yt-dlp flat listing with youtubetab.approximate_date (date-only). Flat
+# shorts entries carry no date at all and rely on the API/RSS overlay; when
+# neither covers them they are kept by the dateless-entry fallback in
+# _video_in_window. Duration comes from the API or flat listing. "all" never
+# date-filters.
 def _video_in_window(
     published_at: datetime | None,
     window_start: datetime | None,
     window_end: datetime | None,
 ) -> bool:
+    """Decide whether a video belongs in the requested window.
+
+    When a real publish date is available it is authoritative: the comparison
+    is inclusive on both boundaries, and naive datetimes are interpreted as
+    UTC. When NO date could be determined from any source (YouTube Data API,
+    RSS pubDate, or yt-dlp's approximate_date), the video is deliberately KEPT:
+    a dateless entry cannot be proven out-of-window, and a positional listing
+    cap is the only remaining approximation. This fallback is an edge case by
+    design - after the API/RSS overlays, flat shorts entries are the only
+    date-less inputs, and the shorts tab is capped low for exactly that reason.
+    """
     if window_start is None and window_end is None:
         return True
     if published_at is None:
@@ -248,6 +265,39 @@ def _video_in_window(
     if window_end and published_at > window_end:
         return False
     return True
+
+
+async def _resolve_channel_youtube_id(
+    channel: Channel, loop: asyncio.AbstractEventLoop
+) -> str | None:
+    """Resolve and cache the UC... channel id (yt-dlp + URL-pattern fallback).
+
+    Persists the id on the Channel row so later syncs can use the YouTube
+    Data API directly. Returns None if it cannot be determined.
+    """
+    if channel.youtube_channel_id:
+        return channel.youtube_channel_id
+    resolved: str | None = None
+    try:
+        resolved, _ = await loop.run_in_executor(
+            _executor, _resolve_channel_id, channel.url
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve channel id via yt-dlp for %s: %s", channel.url, exc
+        )
+    if not resolved:
+        # Belt-and-braces: a /channel/<UC...> URL carries the id directly,
+        # so resolution should not even be needed - but grab it from the URL
+        # rather than giving up on the API path if yt-dlp failed.
+        match = re.search(r"(UC[\w-]{22})", channel.url)
+        resolved = match.group(1) if match else None
+    if resolved:
+        channel.youtube_channel_id = resolved
+        logger.info(
+            "Resolved and cached youtube_channel_id=%s for %s", resolved, channel.url
+        )
+    return resolved
 
 
 def _initial_video_status(video_data: dict[str, Any]) -> VideoStatus:
@@ -327,6 +377,8 @@ def _fetch_videos_via_youtube_api(
                 live_status = "upcoming"
             elif live_broadcast_content == "live":
                 live_status = "is_live"
+            elif live_broadcast_content == "completed":
+                live_status = "was_live"
             
             scheduled_start_at = None
             if "scheduledStartTime" in live_streaming_details:
@@ -414,6 +466,13 @@ async def run_channel_pipeline(
             playliststart, playlistend, skip_fetch = resolve_fetch_range(
                 channel, max_items
             )
+            if settings.YOUTUBE_DATA_API_KEY and time_window != "all":
+                # The API path re-derives the window from exact publish dates
+                # on EVERY sync (video-id deduplication keeps repeats cheap),
+                # so the positional resume/skip logic must not apply - it
+                # would otherwise freeze a 7d sync at its first run's
+                # positional coverage and skip all later syncs.
+                playliststart, playlistend, skip_fetch = None, None, False
             date_filter_mode = (
                 "none" if time_window == "all" else "approximate_date"
             )
@@ -432,21 +491,54 @@ async def run_channel_pipeline(
                     date_filter_mode = "none" if time_window == "all" else "approximate_date"
                     
                     # Try YouTube Data API v3 first if configured
-                    if settings.YOUTUBE_DATA_API_KEY and channel.youtube_channel_id:
+                    if settings.YOUTUBE_DATA_API_KEY and time_window != "all":
+                        youtube_channel_id = await _resolve_channel_youtube_id(
+                            channel, loop
+                        )
+                    else:
+                        youtube_channel_id = None
+                    if settings.YOUTUBE_DATA_API_KEY and youtube_channel_id:
                         logger.info(
-                            "Attempting YouTube Data API v3 for full video listing of channel %s",
+                            "Attempting YouTube Data API v3 for channel %s (id=%s)",
                             channel.url,
+                            youtube_channel_id,
                         )
                         api_videos = await loop.run_in_executor(
                             _executor,
                             _fetch_videos_via_youtube_api,
-                            channel.youtube_channel_id,
+                            youtube_channel_id,
                             settings.YOUTUBE_DATA_API_KEY,
                             window_start,
                             max_items,
                         )
-                        
-                        if api_videos is not None:
+
+                        if api_videos is None:
+                            # API error or quota exhausted: fall back to the
+                            # RSS+flat listing path instead of trusting an
+                            # empty result.
+                            logger.info(
+                                "YouTube API unavailable for %s; falling back to RSS+flat",
+                                channel.url,
+                            )
+                        elif api_videos:
+                            # Live-status/scheduled-start enrichment already
+                            # happens inside _fetch_videos_via_youtube_api.
+                            # Fetch the channel title when it is still unknown.
+                            if not channel.name:
+                                try:
+                                    channel_title = await loop.run_in_executor(
+                                        _executor,
+                                        fetch_channel_title_via_api,
+                                        youtube_channel_id,
+                                        settings.YOUTUBE_DATA_API_KEY,
+                                    )
+                                    if channel_title:
+                                        channel.name = channel_title
+                                except Exception as exc:
+                                    logger.debug(
+                                        "Could not fetch channel title via API: %s", exc
+                                    )
+
                             videos_data = api_videos
                             date_filter_mode = "youtube_api"
                             logger.info(
@@ -454,11 +546,58 @@ async def run_channel_pipeline(
                                 len(videos_data),
                                 channel.url,
                             )
-                            # Skip RSS+flat path since API provided complete data
+
+                            # The uploads playlist only contains published
+                            # videos, so SCHEDULED live events are invisible
+                            # to it. Complement with a bounded flat listing of
+                            # the streams tab, where upcoming events appear,
+                            # and keep only rows the API does not know.
+                            try:
+                                stream_rows = await loop.run_in_executor(
+                                    _executor,
+                                    list_channel_videos,
+                                    channel.url,
+                                    50,
+                                    None,
+                                    ("streams",),
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Streams-tab complement listing failed for %s: %s",
+                                    channel.url,
+                                    exc,
+                                )
+                                stream_rows = []
+                            known_ids = {
+                                v["youtube_video_id"] for v in videos_data
+                            }
+                            extra_rows = [
+                                row
+                                for row in stream_rows
+                                if row["youtube_video_id"] not in known_ids
+                            ]
+                            if extra_rows:
+                                logger.info(
+                                    "Added %d streams-tab-only rows (upcoming "
+                                    "events etc.) on top of the API listing",
+                                    len(extra_rows),
+                                )
+                                videos_data.extend(extra_rows)
+                            # API data already covers all tabs (the uploads
+                            # playlist includes shorts and streams); no flat
+                            # listing or RSS overlay is needed.
                             rss_videos = None
-                        elif api_videos is None and _api_quota_exhausted:
+                        else:
+                            # api_videos == []: the uploads playlist really has
+                            # nothing new in this window; do NOT fall back to
+                            # the flat listing, whose stale-but-in-window
+                            # entries and date-less shorts would create false
+                            # positives.
+                            videos_data = []
+                            date_filter_mode = "youtube_api"
                             logger.info(
-                                "YouTube API quota exhausted; falling back to RSS+flat for %s",
+                                "YouTube API returned 0 videos within the requested "
+                                "window for %s; trusting the exact-dated result",
                                 channel.url,
                             )
                     
@@ -546,7 +685,10 @@ async def run_channel_pipeline(
 
                 if max_items is None:
                     channel.synced_all = True
-                else:
+                elif date_filter_mode != "youtube_api":
+                    # last_synced_item_count tracks FLAT listing positional
+                    # coverage; API-mode syncs derive the window from exact
+                    # dates and must not corrupt that bookkeeping.
                     channel.last_synced_item_count = max(
                         channel.last_synced_item_count or 0, max_items
                     )
@@ -558,25 +700,45 @@ async def run_channel_pipeline(
             with_duration = sum(
                 1 for video in videos_data if video.get("duration_seconds") is not None
             )
+            per_tab = {
+                tab: sum(1 for video in videos_data if video.get("source_tab") == tab)
+                for tab in ("videos", "shorts", "streams")
+            }
             logger.info(
                 "Channel %s listing complete: mode=%s, %d/%d videos have published_at, "
-                "%d/%d have duration_seconds",
+                "%d/%d have duration_seconds (per-tab listed rows: videos=%d, "
+                "shorts=%d, streams=%d; API rows carry no source_tab)",
                 channel.url,
                 date_filter_mode,
                 dated,
                 len(videos_data),
                 with_duration,
                 len(videos_data),
+                per_tab["videos"],
+                per_tab["shorts"],
+                per_tab["streams"],
             )
-            if date_filter_mode not in ("youtube_api", "approximate_date+rss") and time_window != "all" and dated < len(videos_data):
+            if time_window != "all" and dated < len(videos_data):
                 logger.info(
-                    "Videos without published_at are kept via playlist-cap / approximate_date fallback"
+                    "%d listed videos have no publish date from any source; they are "
+                    "kept because they cannot be proven out-of-window (dateless flat "
+                    "shorts entries are the usual cause)",
+                    len(videos_data) - dated,
                 )
             filtered = [
                 video
                 for video in videos_data
                 if _video_in_window(video.get("published_at"), window_start, window_end)
             ]
+            logger.info(
+                "Channel %s window filter [%s .. %s]: %d of %d listed entries passed "
+                "(dateless entries are always kept)",
+                channel.url,
+                window_start.isoformat() if window_start else "-inf",
+                window_end.isoformat() if window_end else "+inf",
+                len(filtered),
+                len(videos_data),
+            )
 
             existing_result = await session.execute(
                 select(Video).where(Video.channel_id == channel_id)
@@ -650,6 +812,7 @@ async def run_channel_pipeline(
                 new_count += 1
 
             sync_job.new_videos_found = new_count
+            sync_job.videos_in_window = len(filtered)
             channel.status = ChannelStatus.PROCESSING
             await session.commit()
 

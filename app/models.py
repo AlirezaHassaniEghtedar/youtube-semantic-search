@@ -98,6 +98,9 @@ class SyncJob(Base):
         nullable=False,
     )
     new_videos_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Rows that passed the time-window filter, for diagnosing "not enough
+    # videos in the window" complaints independent of transcription failures.
+    videos_in_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

@@ -31,6 +31,12 @@ _ATOM_NS = {
 _UPCOMING_LIVE_STATUSES = frozenset({"is_upcoming", "upcoming"})
 _STREAMED_LIVE_STATUSES = frozenset({"was_live", "post_live"})
 _CHANNEL_TABS = ("videos", "shorts", "streams")
+# Per-tab ceilings for the "all" / uncapped listing (max_items=None). For an
+# explicitly requested max_items the full amount is passed to every tab; the
+# caller's window filtering, not these caps, decides what "last 7 days" means.
+# Shorts is capped much lower than the others: flat shorts entries carry no
+# publish dates (see _parse_entry_published_at), so enumerating hundreds of
+# undated shorts rarely adds in-window videos and mostly wastes fetch time.
 _TAB_MAX_ITEMS: dict[str, int] = {
     "shorts": 10,
     "videos": 50,
@@ -40,6 +46,32 @@ _TAB_MAX_ITEMS: dict[str, int] = {
 # Backwards-compatible aliases for call sites in this module.
 _base_ydl_opts = base_ydl_opts
 _raise_if_bot_check = raise_if_bot_check
+
+
+# Shorts ceiling when an explicit max_items was requested. Flat shorts
+# entries carry NO publish dates (unlike videos/streams), so enumerating
+# hundreds of them cannot improve window filtering - it only adds undated
+# rows that the pipeline must keep as "cannot be proven out-of-window".
+# The videos/streams tabs pass the full requested amount; shorts stays bounded.
+_SHORTS_EXPLICIT_MAX_ITEMS = 30
+
+
+def _tab_fetch_limit(tab: str, max_items: int | None) -> int | None:
+    """Resolve the fetch depth for one channel tab.
+
+    "all" (max_items=None) uses the per-tab default ceilings. An explicit
+    max_items is what the caller wants in TOTAL across tabs: videos and
+    streams may each contribute up to that full amount (seen_ids dedupes
+    cross-tab overlaps and the pipeline's window filter discards
+    out-of-window entries afterwards), while shorts is additionally bounded
+    because its entries are date-less. The per-tab defaults never undercut
+    an explicit caller cap for dated tabs.
+    """
+    if max_items is None:
+        return _TAB_MAX_ITEMS[tab]
+    if tab == "shorts":
+        return min(max_items, _SHORTS_EXPLICIT_MAX_ITEMS)
+    return max_items
 
 
 def _parse_upload_date(raw: str | None) -> datetime | None:
@@ -264,7 +296,18 @@ def fetch_channel_rss_videos(url: str) -> list[dict[str, Any]] | None:
     for attempt in range(1, 3):  # 2 attempts
         pace_youtube_request("channel_rss")
         try:
-            response = httpx.get(feed_url, timeout=20.0, follow_redirects=True)
+            response = httpx.get(
+                feed_url,
+                timeout=20.0,
+                follow_redirects=True,
+                headers={
+                    # Some networks serve a 404 challenge page for the feed
+                    # unless the request looks like a browser.
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+                    "Accept": "application/atom+xml, application/xml, text/xml, */*",
+                },
+            )
             response.raise_for_status()
             root = ET.fromstring(response.content)
             break  # Success, exit retry loop
@@ -355,6 +398,7 @@ def list_channel_videos(
     url: str,
     max_items: int | None = None,
     start_item: int | None = None,
+    tabs: tuple[str, ...] = _CHANNEL_TABS,
 ) -> list[dict[str, Any]]:
     """List a channel's videos across its videos/shorts/streams tabs."""
     base_url = _normalize_channel_base_url(url)
@@ -362,10 +406,9 @@ def list_channel_videos(
     seen_ids: set[str] = set()
     channel_name = ""
 
-    for tab in _CHANNEL_TABS:
+    for tab in tabs:
         tab_url = f"{base_url}/{tab}"
-        tab_cap = _TAB_MAX_ITEMS[tab]
-        tab_max_items = tab_cap if max_items is None else min(max_items, tab_cap)
+        tab_max_items = _tab_fetch_limit(tab, max_items)
         try:
             tab_results, tab_channel_name = _list_channel_tab(
                 tab_url, tab, tab_max_items, start_item
@@ -388,13 +431,44 @@ def list_channel_videos(
     for item in results:
         item["channel_name"] = channel_name or item.get("channel_name")
 
+    per_tab = {
+        tab: sum(1 for item in results if item.get("source_tab") == tab)
+        for tab in _CHANNEL_TABS
+    }
+    dated = sum(1 for item in results if item["published_at"] is not None)
     logger.info(
         "list_channel_videos: parsed %d videos total for %s "
-        "(videos+shorts+streams); upload_date present=%d null=%d",
+        "(videos=%d shorts=%d streams=%d)",
         len(results),
         base_url,
-        sum(1 for item in results if item["published_at"] is not None),
-        sum(1 for item in results if item["published_at"] is None),
+        per_tab["videos"],
+        per_tab["shorts"],
+        per_tab["streams"],
+    )
+    logger.info(
+        "list_channel_videos: upload_date present=%d null=%d "
+        "(per-tab dated: videos=%d/%d, shorts=%d/%d, streams=%d/%d; shorts "
+        "entries are date-less by design and rely on the API/RSS overlay)",
+        dated,
+        len(results) - dated,
+        sum(
+            1
+            for item in results
+            if item.get("source_tab") == "videos" and item["published_at"] is not None
+        ),
+        per_tab["videos"],
+        sum(
+            1
+            for item in results
+            if item.get("source_tab") == "shorts" and item["published_at"] is not None
+        ),
+        per_tab["shorts"],
+        sum(
+            1
+            for item in results
+            if item.get("source_tab") == "streams" and item["published_at"] is not None
+        ),
+        per_tab["streams"],
     )
     return results
 
@@ -473,15 +547,23 @@ def _list_channel_tab(
                         int(parsed_duration) if parsed_duration is not None else None
                     )
 
+                # For upcoming entries, upload_date/release_date carry the
+                # SCHEDULED START (a future instant), not a publish date. Keep
+                # them separate so published_at stays null and the window
+                # filter (which keeps null-date entries) cannot drop a future
+                # event because its scheduled start lies beyond window_end.
+                published_at = None if upcoming else _parse_entry_published_at(entry)
+                scheduled_start_at = _scheduled_start_from_entry(entry)
+
                 results.append(
                     _video_record(
                         video_id,
                         entry.get("title") or "Untitled",
-                        _parse_entry_published_at(entry),
+                        published_at,
                         duration_seconds,
                         channel_name,
                         live_status=live_status,
-                        scheduled_start_at=_scheduled_start_from_entry(entry),
+                        scheduled_start_at=scheduled_start_at,
                         webpage_url=entry.get("webpage_url") or entry.get("original_url"),
                         source_tab=tab,
                     )

@@ -46,6 +46,9 @@ async def ensure_columns() -> None:
             ("synced_all", "BOOLEAN DEFAULT 0"),
             ("youtube_channel_id", "TEXT"),
         ],
+        "sync_jobs": [
+            ("videos_in_window", "INTEGER"),
+        ],
         "videos": [
             ("live_status", "TEXT"),
             ("scheduled_start_at", "DATETIME"),

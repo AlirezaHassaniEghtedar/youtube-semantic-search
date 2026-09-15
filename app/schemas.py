@@ -38,6 +38,7 @@ class SyncJobSummary(BaseModel):
     requested_max_items: int | None
     status: str
     new_videos_found: int
+    videos_in_window: int | None = None
     error_message: str | None
     created_at: datetime
     finished_at: datetime | None

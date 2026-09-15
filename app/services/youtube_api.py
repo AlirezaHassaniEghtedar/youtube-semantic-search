@@ -27,14 +27,14 @@ def _parse_iso8601_duration(duration_str: str) -> int | None:
     
     Handles: PT1H2M3S, PT5M30S, PT45S, P1DT2H3M4S, etc.
     """
-    if not duration_str or not duration_str.startswith("PT"):
+    if not duration_str:
         return None
     
-    # Remove PT prefix
-    duration_str = duration_str[2:]
-    
-    pattern = r"(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?"
-    match = re.match(pattern, duration_str)
+    # The T section is optional and only follows the (optional) D section.
+    # Previously the PT prefix was stripped but the pattern still required a
+    # literal T, so every plain 'PT..H..M..S' duration parsed as None.
+    pattern = r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?"
+    match = re.fullmatch(pattern, duration_str.strip())
     if not match:
         return None
     
@@ -221,6 +221,23 @@ def fetch_channel_videos_via_api(
     
     logger.info("Fetched %d videos via API for channel %s", len(videos), channel_id)
     return videos
+
+
+def fetch_channel_title_via_api(channel_id: str, api_key: str) -> str | None:
+    """Fetch a channel's title via YouTube Data API (1 quota unit)."""
+    try:
+        data = _make_request(
+            "https://www.googleapis.com/youtube/v3/channels",
+            {"part": "snippet", "id": channel_id},
+            api_key,
+        )
+        items = data.get("items", [])
+        if not items:
+            return None
+        return items[0].get("snippet", {}).get("title") or None
+    except Exception as exc:
+        logger.warning("Failed to fetch channel title for %s: %s", channel_id, exc)
+        return None
 
 
 def fetch_video_durations_via_api(
