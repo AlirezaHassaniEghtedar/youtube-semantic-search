@@ -562,6 +562,25 @@ body {
 
 /* ── Table ──────────────────────────────────────────────────────────────── */
 
+/* ── Videos toolbar (sort + type filter) ───────────────────────────────── */
+
+.videos-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+.videos-toolbar__sort {
+  flex: 0 0 200px;
+  min-width: 160px;
+}
+
+.videos-toolbar__filter .toggle-group {
+  flex-wrap: wrap;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -1189,6 +1208,25 @@ body {
   line-height: 1.6;
 }
 
+/* Markdown block spacing: each paragraph/list is wrapped in <p>/<ul>/<ol> by
+   renderMarkdown(), so margins (not collapsed newlines) separate blocks. The
+   :last-child rules avoid an awkward extra gap after the final block. */
+.chat-message__text p {
+  margin: 0 0 var(--space-2);
+}
+
+.chat-message__text p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-message__text > *:first-child {
+  margin-top: 0;
+}
+
+.chat-message__text > *:last-child {
+  margin-bottom: 0;
+}
+
 /* Markdown */
 .chat-message__text strong {
   font-weight: 700;
@@ -1211,13 +1249,13 @@ body {
 }
 
 .chat-message__text ul {
-  margin: 8px 0;
+  margin: var(--space-2) 0 var(--space-2);
   padding-left: 20px;
   list-style: disc;
 }
 
 .chat-message__text ol {
-  margin: 8px 0;
+  margin: var(--space-2) 0 var(--space-2);
   padding-left: 20px;
   list-style: decimal;
 }
@@ -1256,6 +1294,25 @@ body {
 
 .chat-message__action.copied {
   color: var(--color-success);
+}
+
+/* Inline edit of a sent user message */
+.chat-message__edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.chat-message__edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.chat-message__edit-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 .chat-message__sources {

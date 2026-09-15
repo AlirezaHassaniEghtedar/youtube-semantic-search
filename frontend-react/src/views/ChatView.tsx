@@ -36,8 +36,22 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
   const [sending, setSending] = useState(false);
   const [chatChannelId, setChatChannelId] = useState("");
   const [loadedOnce, setLoadedOnce] = useState(false);
+  // Currently-edited user message id (inline edit state).
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow the textarea to fit its content: reset to "auto", read the
+  // natural scrollHeight, then pin the height to it. The CSS max-height
+  // (.chat-textarea { max-height: 120px }) caps the growth; beyond the cap
+  // overflow-y kicks in and the textarea scrolls internally instead.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   // Load messages for the active conversation
   useEffect(() => {
@@ -68,8 +82,8 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages, sending]);
 
-  async function handleSend() {
-    const trimmed = input.trim();
+  async function sendQuestion(text: string, replaceFromIndex: number | null) {
+    const trimmed = text.trim();
     if (!trimmed || !activeId || sending) return;
 
     const optimistic: ChatMessage = {
@@ -80,7 +94,13 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
       sources: null,
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, optimistic]);
+    // Normal send: append. Edit send: the edited message and everything after
+    // it have been truncated (server-side) — replace from the edited slot.
+    setMessages((prev) =>
+      replaceFromIndex === null
+        ? [...prev, optimistic]
+        : [...prev.slice(0, replaceFromIndex), optimistic]
+    );
     setInput("");
     setSending(true);
 
@@ -112,6 +132,13 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
       ]);
       // Title may have been auto-generated — tell the sidebar to refresh live
       window.dispatchEvent(new CustomEvent("conversations-changed"));
+      // Re-sync from the server so the optimistic temp- ids are replaced by
+      // the real persisted ones — actions that address a message by id
+      // (copy sources links, edit-truncate) need the server id to work.
+      const fresh = await apiFetch<ChatMessage[]>(
+        `/api/conversations/${activeId}/messages`
+      );
+      setMessages(fresh);
     } catch (err) {
       const msg = (err as Error).message;
       setMessages((prev) => [
@@ -128,6 +155,29 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
       showToast(msg, "error");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleSend() {
+    await sendQuestion(input, null);
+  }
+
+  async function handleSaveEdit(message: ChatMessage, newText: string) {
+    const trimmed = newText.trim();
+    if (!trimmed || !activeId) return;
+    const index = messages.findIndex((m) => m.id === message.id);
+    if (index === -1) return;
+    try {
+      // Discard the edited message and everything after it on the SERVER, so
+      // the truncation survives a restart, then re-send the edited question.
+      await apiFetch(`/api/conversations/${activeId}/truncate`, {
+        method: "POST",
+        body: JSON.stringify({ after_message_id: message.id }),
+      });
+      setEditingId(null);
+      await sendQuestion(trimmed, index);
+    } catch (err) {
+      showToast((err as Error).message, "error");
     }
   }
 
@@ -157,7 +207,17 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
                 <p>Ask anything about your synced videos.</p>
               </div>
             ) : (
-              messages.map((m) => <ChatMessageItem key={m.id} message={m} />)
+              messages.map((m) => (
+                <ChatMessageItem
+                  key={m.id}
+                  message={m}
+                  isEditing={editingId === m.id}
+                  onStartEdit={() => setEditingId(m.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onSaveEdit={(text) => void handleSaveEdit(m, text)}
+                  disabled={sending}
+                />
+              ))
             )}
             {sending && (
               <div className="chat-loading">
@@ -182,6 +242,7 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
               ))}
             </select>
             <textarea
+              ref={textareaRef}
               className="chat-textarea"
               placeholder="Ask a question about your videos…"
               dir="auto"
@@ -202,9 +263,27 @@ export function ChatView({ activeId, channels }: ChatViewProps) {
 
 // ── Message item ────────────────────────────────────────────────────────────
 
-function ChatMessageItem({ message }: { message: ChatMessage }) {
+interface ChatMessageItemProps {
+  message: ChatMessage;
+  isEditing: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (text: string) => void;
+  disabled: boolean;
+}
+
+function ChatMessageItem({
+  message,
+  isEditing,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  disabled,
+}: ChatMessageItemProps) {
   const { showToast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [editText, setEditText] = useState(message.content);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
   const dir = detectDir(message.content);
 
   async function handleCopy() {
@@ -217,15 +296,62 @@ function ChatMessageItem({ message }: { message: ChatMessage }) {
     }
   }
 
+  // Pre-fill and focus the inline editor when edit mode opens. Same prompt →
+  // inline field with save/cancel pattern as the conversation rename flow.
+  useEffect(() => {
+    if (isEditing) {
+      setEditText(message.content);
+      // Wait one frame so the textarea is mounted before focusing/selecting.
+      requestAnimationFrame(() => {
+        editInputRef.current?.focus();
+        editInputRef.current?.select();
+      });
+    }
+  }, [isEditing, message.content]);
+
+  function handleEditKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      onSaveEdit(editText);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancelEdit();
+    }
+  }
+
   return (
     <div className={`chat-message chat-message--${message.role}`}>
       <div className="chat-message__content">
-        <div
-          className="chat-message__text"
-          dir={dir}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-        />
-        {message.role === "assistant" && (
+        {isEditing ? (
+          <div className="chat-message__edit">
+            <textarea
+              ref={editInputRef}
+              className="chat-textarea chat-message__edit-input"
+              dir={dir}
+              rows={2}
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              disabled={disabled}
+            />
+            <div className="chat-message__edit-actions">
+              <Button size="sm" onClick={() => onSaveEdit(editText)} disabled={disabled}>
+                Save &amp; resend
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onCancelEdit} disabled={disabled}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="chat-message__text"
+            dir={dir}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+          />
+        )}
+        {!isEditing && (
           <div className="chat-message__actions">
             <button
               type="button"
@@ -234,6 +360,16 @@ function ChatMessageItem({ message }: { message: ChatMessage }) {
             >
               {copied ? "✓" : "Copy"}
             </button>
+            {message.role === "user" && (
+              <button
+                type="button"
+                className="chat-message__action"
+                onClick={onStartEdit}
+                disabled={disabled}
+              >
+                Edit
+              </button>
+            )}
           </div>
         )}
       </div>

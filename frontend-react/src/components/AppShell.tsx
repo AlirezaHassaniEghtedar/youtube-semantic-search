@@ -45,7 +45,10 @@ const SECTIONS: { id: Section; label: string; icon: ReactElement }[] = [
 
 export function AppShell() {
   const { theme, toggleTheme } = useTheme();
-  const { channels } = useChannels();
+  // The ONLY useChannels() instance in the app. ChannelsView, SearchView, and
+  // ChatView all consume this shared state so a sync completing on the
+  // Channels view is immediately visible to the other views' channel lists.
+  const { channels, anyActive, refresh: refreshChannels } = useChannels();
 
   const [section, setSection] = useState<Section>("chat");
   // On narrow viewports the sidebar overlays the content — start collapsed.
@@ -184,7 +187,11 @@ export function AppShell() {
         {section === "chat" ? (
           <ChatView activeId={activeConversationId} channels={channels} />
         ) : section === "channels" ? (
-          <ChannelsView />
+          <ChannelsView
+            channels={channels}
+            anyActive={anyActive}
+            refresh={refreshChannels}
+          />
         ) : (
           <SearchView channels={channels} />
         )}

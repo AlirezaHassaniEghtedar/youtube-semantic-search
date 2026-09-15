@@ -147,3 +147,9 @@ class CreateConversationRequest(BaseModel):
 
 class RenameConversationRequest(BaseModel):
     title: str
+
+
+class TruncateConversationRequest(BaseModel):
+    """Delete every message created AFTER the given message id (inclusive=False)."""
+
+    after_message_id: UUID

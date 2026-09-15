@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../lib/api";
 import {
   buildGoogleCalendarLink,
@@ -10,10 +10,9 @@ import {
 import { selectSubtitleFile, selectVideoFile, hasNativeDialogs } from "../lib/pywebview";
 import { useToast } from "../context/ToastContext";
 import { useTranscriptModal } from "../context/TranscriptModalContext";
-import { useChannels } from "../hooks/useChannels";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
-import type { SyncJob, Video } from "../types";
+import type { Channel, SyncJob, Video } from "../types";
 
 const ACTIVE_CHANNEL_STATUSES = new Set(["pending", "fetching_list", "processing"]);
 
@@ -277,7 +276,7 @@ function AddLocalVideoForm({ onAdded }: { onAdded: () => void }) {
 // ── Channel list ────────────────────────────────────────────────────────────
 
 interface ChannelListProps {
-  channels: ReturnType<typeof useChannels>["channels"];
+  channels: Channel[];
   selectedChannelId: string | null;
   onSelect: (id: string, name: string) => void;
   onChanged: () => void;
@@ -352,6 +351,58 @@ function ChannelList({ channels, selectedChannelId, onSelect, onChanged }: Chann
 
 // ── Videos table + sync history ─────────────────────────────────────────────
 
+// Video-type sort order for the "Sort by type" option. Upcoming events first
+// (time-sensitive — the user is most likely watching for a scheduled stream),
+// then streamed videos and regular long videos newest-first within their
+// groups, shorts last (quick, low-information content). Ties inside each group
+// keep the date order so grouping never looks random.
+const VIDEO_TYPE_SORT_ORDER = [
+  "upcoming event",
+  "streamed video",
+  "long video",
+  "short video",
+];
+
+const VIDEO_TYPE_FILTER_OPTIONS = [
+  "long video",
+  "short video",
+  "streamed video",
+  "upcoming event",
+] as const;
+
+type SortMode = "date-desc" | "date-asc" | "type";
+
+function sortVideos(videos: Video[], mode: SortMode): Video[] {
+  const sorted = [...videos];
+  if (mode === "date-desc" || mode === "date-asc") {
+    const direction = mode === "date-desc" ? -1 : 1;
+    sorted.sort((a, b) => {
+      // Videos with no published_at always sort to the END regardless of
+      // direction, so they land in a predictable place instead of bouncing
+      // around (NaN comparisons would leave their position arbitrary).
+      if (!a.published_at && !b.published_at) return 0;
+      if (!a.published_at) return 1;
+      if (!b.published_at) return -1;
+      return direction * a.published_at.localeCompare(b.published_at);
+    });
+  } else {
+    const rank = (t: string | null) => {
+      const idx = t ? VIDEO_TYPE_SORT_ORDER.indexOf(t) : -1;
+      return idx === -1 ? VIDEO_TYPE_SORT_ORDER.length : idx;
+    };
+    sorted.sort((a, b) => {
+      const byType = rank(a.video_type) - rank(b.video_type);
+      if (byType !== 0) return byType;
+      // Within the same type: newest first (ISO strings compare correctly).
+      if (!a.published_at && !b.published_at) return 0;
+      if (!a.published_at) return 1;
+      if (!b.published_at) return -1;
+      return b.published_at.localeCompare(a.published_at);
+    });
+  }
+  return sorted;
+}
+
 function VideosPanel({
   channelId,
   channelName,
@@ -365,6 +416,31 @@ function VideosPanel({
 }) {
   const [videos, setVideos] = useState<Video[]>([]);
   const [jobs, setJobs] = useState<SyncJob[]>([]);
+  const [sortMode, setSortMode] = useState<SortMode>("date-desc");
+  // Empty set = no filter: every type is visible by default.
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+
+  // Filter first, then sort — pure client-side operations on the fetched
+  // array, so they compose and update instantly without any re-fetch.
+  const visibleVideos = useMemo(() => {
+    const filtered =
+      typeFilter.size === 0
+        ? videos
+        : videos.filter((v) => v.video_type !== null && typeFilter.has(v.video_type));
+    return sortVideos(filtered, sortMode);
+  }, [videos, sortMode, typeFilter]);
+
+  function toggleTypeFilter(type: string) {
+    setTypeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -399,6 +475,37 @@ function VideosPanel({
         <h2 className="card__title">Videos — {channelName}</h2>
         <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
       </div>
+      <div className="videos-toolbar">
+        <div className="form__field videos-toolbar__sort">
+          <label htmlFor="videos-sort" className="form__label">Sort</label>
+          <select
+            id="videos-sort"
+            className="form__select"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+          >
+            <option value="date-desc">Date (newest first)</option>
+            <option value="date-asc">Date (oldest first)</option>
+            <option value="type">Video type</option>
+          </select>
+        </div>
+        <div className="form__field videos-toolbar__filter">
+          <span className="form__label">Filter by type</span>
+          <div className="toggle-group" role="group" aria-label="Filter by video type">
+            {VIDEO_TYPE_FILTER_OPTIONS.map((type) => (
+              <button
+                key={type}
+                type="button"
+                className={`toggle-btn ${typeFilter.has(type) ? "toggle-btn--active" : ""}`}
+                aria-pressed={typeFilter.has(type)}
+                onClick={() => toggleTypeFilter(type)}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="table-wrap">
         <table className="table">
           <thead>
@@ -416,8 +523,12 @@ function VideosPanel({
               <tr>
                 <td colSpan={6} className="empty-state">No videos in this time window.</td>
               </tr>
+            ) : visibleVideos.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="empty-state">No videos match the selected type filter.</td>
+              </tr>
             ) : (
-              videos.map((v) => (
+              visibleVideos.map((v) => (
                 <VideoRow key={v.id} video={v} />
               ))
             )}
@@ -532,8 +643,17 @@ function VideoRow({ video }: { video: Video }) {
 
 // ── ChannelsView ────────────────────────────────────────────────────────────
 
-export function ChannelsView() {
-  const { channels, anyActive, refresh } = useChannels();
+interface ChannelsViewProps {
+  // Shared channel state owned by AppShell's single useChannels() instance.
+  // Owning it here too would create a second, independent state instance with
+  // its own polling loop, and the lists AppShell passes to SearchView/ChatView
+  // could go stale after a sync changed things on this view.
+  channels: Channel[];
+  anyActive: boolean;
+  refresh: () => Promise<unknown>;
+}
+
+export function ChannelsView({ channels, anyActive, refresh }: ChannelsViewProps) {
   const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
 
   const handleChanged = useCallback(() => {

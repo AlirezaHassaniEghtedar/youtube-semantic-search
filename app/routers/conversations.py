@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import selectinload
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -16,6 +16,7 @@ from app.schemas import (
     CreateConversationRequest,
     RenameConversationRequest,
     SearchResult,
+    TruncateConversationRequest,
 )
 from app.services.chat import answer_question, generate_conversation_title
 from app.services.embedder import EmbedderService
@@ -161,6 +162,51 @@ async def rename_conversation(
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )
+
+
+@router.post("/{conversation_id}/truncate", status_code=status.HTTP_204_NO_CONTENT)
+async def truncate_conversation_after_message(
+    conversation_id: UUID,
+    payload: TruncateConversationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete all messages created strictly AFTER the given message.
+
+    Used by the chat UI's "edit message" feature: the edited message itself
+    stays, everything after it is discarded, and the client re-sends the
+    edited text as a fresh message via POST /api/chat.
+    """
+    conv_result = await db.execute(
+        select(ChatConversation).where(ChatConversation.id == conversation_id)
+    )
+    conv = conv_result.scalars().first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    anchor_result = await db.execute(
+        select(ChatMessage).where(
+            ChatMessage.id == payload.after_message_id,
+            ChatMessage.conversation_id == conversation_id,
+        )
+    )
+    anchor = anchor_result.scalars().first()
+    if not anchor:
+        raise HTTPException(status_code=404, detail="Message not found in this conversation")
+
+    # created_at has second resolution in SQLite and several messages can share
+    # a timestamp, so "after the anchor" is derived from created_at OR the
+    # anchor row itself, never from a strict timestamp comparison alone.
+    await db.execute(
+        delete(ChatMessage).where(
+            ChatMessage.conversation_id == conversation_id,
+            or_(
+                ChatMessage.created_at > anchor.created_at,
+                ChatMessage.id == anchor.id,
+            ),
+        )
+    )
+    conv.updated_at = datetime.now(timezone.utc)
+    await db.commit()
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)

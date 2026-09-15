@@ -4,6 +4,17 @@
 // produced, the result is safe to inject via dangerouslySetInnerHTML in React:
 // model-generated content can never introduce raw HTML, only the few tags the
 // regexes below emit.
+//
+// Line processing works on BLOCKS separated by blank lines (standard paragraph
+// semantics):
+//   - a block of list-item lines emits a <ul>/<ol>, exactly as before;
+//   - a prose block (possibly several consecutive lines) is wrapped in a single
+//     <p>, with internal line breaks preserved as <br/> (soft wrap within the
+//     same paragraph).
+// Joining blocks with "\n" used to be enough for <pre> contexts, but in normal
+// HTML a bare newline collapses to a space, so multiple paragraphs rendered as
+// one unbroken blob. Wrapping each block in <p>/<ul>/<ol> lets the CSS margins
+// on .chat-message__text create real visual separation between blocks.
 
 function escapeHtml(str: string): string {
   return str
@@ -12,6 +23,18 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+const LIST_ITEM_RE = /^(\d+)\. /;
+
+function renderListBlock(block: string[], ordered: boolean): string {
+  const open = ordered ? "<ol>" : "<ul>";
+  const close = ordered ? "</ol>" : "</ul>";
+  const items = block.map((line) => {
+    const content = ordered ? line.replace(LIST_ITEM_RE, "") : line.replace(/^[-•*] /, "");
+    return "<li>" + content + "</li>";
+  });
+  return open + "\n" + items.join("\n") + "\n" + close;
 }
 
 export function renderMarkdown(text: string): string {
@@ -28,42 +51,37 @@ export function renderMarkdown(text: string): string {
   // Inline code: `text`
   html = html.replace(/`(.*?)`/g, "<code>$1</code>");
 
-  // Line breaks and lists
-  const lines = html.split("\n");
-  let inUl = false;
-  let inOl = false;
   const output: string[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-
-    if (/^[-•*] /.test(line)) {
-      if (!inUl) {
-        output.push("<ul>");
-        inUl = true;
-      }
-      output.push("<li>" + line.replace(/^[-•*] /, "") + "</li>");
-    } else if (/^\d+\. /.test(line)) {
-      if (!inOl) {
-        output.push("<ol>");
-        inOl = true;
-      }
-      output.push("<li>" + line.replace(/^\d+\. /, "") + "</li>");
+  // Split into blocks on blank lines. Consecutive non-blank lines form ONE
+  // block (a paragraph or a list).
+  const blocks = html.split(/\n/).reduce<string[][]>((acc, rawLine) => {
+    const line = rawLine.trim();
+    if (line === "") {
+      acc.push([]); // blank line: start a new block
     } else {
-      if (inUl) {
-        output.push("</ul>");
-        inUl = false;
-      }
-      if (inOl) {
-        output.push("</ol>");
-        inOl = false;
-      }
-      if (line) output.push(line);
+      if (acc.length === 0) acc.push([]);
+      acc[acc.length - 1].push(line);
+    }
+    return acc;
+  }, []);
+
+  for (const block of blocks) {
+    if (block.length === 0) continue; // skip empty blocks from leading/trailing blank lines
+
+    const isUl = /^[-•*] /.test(block[0]);
+    const olMatch = block[0].match(LIST_ITEM_RE);
+    if (isUl && block.every((line) => /^[-•*] /.test(line))) {
+      output.push(renderListBlock(block, false));
+    } else if (olMatch && block.every((line) => LIST_ITEM_RE.test(line))) {
+      output.push(renderListBlock(block, true));
+    } else {
+      // Prose block. A list item that appears mid-block (e.g. a list directly
+      // followed by prose without a blank line) still gets its marker kept as
+      // plain text — the same content the old renderer produced.
+      output.push("<p>" + block.join("<br/>") + "</p>");
     }
   }
-
-  if (inUl) output.push("</ul>");
-  if (inOl) output.push("</ol>");
 
   return output.join("\n");
 }
